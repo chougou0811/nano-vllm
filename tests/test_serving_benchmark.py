@@ -240,7 +240,9 @@ class WorkloadTests(unittest.TestCase):
         from benchmarks.serving.__main__ import parse_args
         base = ["--model", "/tmp/model", "--model-revision", "a"*40, "--output-dir", "/tmp/out"]
         for extra in [["--arrival-interval-ms", "nan"], ["--concurrency", "0"],
-                      ["--prompt-length", "2048"], ["--ttft-slo-ms", "-1"]]:
+                      ["--prompt-length", "2048"], ["--ttft-slo-ms", "-1"],
+                      ["--scheduler-prefill-chunk", "0"], ["--scheduler-min-prefill-chunk", "-1"],
+                      ["--scheduler-ttft-ms", "nan"], ["--scheduler-tpot-ms", "inf"]]:
             with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
                 parse_args(base + extra)
 

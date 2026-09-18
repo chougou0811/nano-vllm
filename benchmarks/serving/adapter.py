@@ -106,6 +106,7 @@ class ObservedScheduler:
                     is_prefill=is_prefill, request_ids=[], scheduled_tokens=[],
                     queue_before=queue_before, queue_after_schedule=self.queue_state(),
                     batch_size=len(seqs), context_lengths=[], block_table_lengths=[])
+        step["policy_decision"] = dict(getattr(self.original, "last_decision", {}))
         for seq in seqs:
             record = self.by_sequence[seq.seq_id]
             if record.first_scheduled_ns is None:
@@ -163,7 +164,8 @@ class ObservedScheduler:
 
 
 def run_workload(engine, specs, sampling_params, concurrency, timeout_ns,
-                 clock=perf_counter_ns, sleeper=sleep, arrival_mode="concurrency-gated"):
+                 clock=perf_counter_ns, sleeper=sleep, arrival_mode="concurrency-gated",
+                 propagate_arrival=False):
     """Logical arrivals stay fixed even while inference or admission is blocked."""
     if not specs or concurrency < 1 or timeout_ns <= 0:
         raise ValueError("Workload, concurrency and timeout must be positive")
@@ -203,7 +205,8 @@ def run_workload(engine, specs, sampling_params, concurrency, timeout_ns,
                 record.admission_step = len(result.steps)
                 observer.current_request = record
                 try:
-                    engine.add_request(spec.prompt_token_ids, sampling_params(spec))
+                    kwargs = {"arrival_time_ns": origin + spec.arrival_ns} if propagate_arrival else {}
+                    engine.add_request(spec.prompt_token_ids, sampling_params(spec), **kwargs)
                 finally:
                     observer.current_request = None
                 active.add(record.request_id)

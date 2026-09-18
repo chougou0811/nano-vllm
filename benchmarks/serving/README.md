@@ -121,3 +121,33 @@ shape-warmed closed, shape-warmed open), each with three repeats, and a separate
 diagnostic D group. It clones the same existing compiler cache snapshot per group,
 records its inventory, and leaves the original shared caches untouched. A fresh
 process is not a cold-cache experiment. Failed/slow samples are never removed.
+
+## Scheduler Policy Experiments
+
+The default remains `--scheduler-policy original`. Opt-in `static` and `slo-aware`
+select new scheduler policies; they do not change the model, TP or sampling code.
+See `docs/SCHEDULER.md` for policy design and the first pilot's limitations.
+Use `--arrival-mode open-loop` to expose engine waiting pressure.
+
+Control targets `--scheduler-ttft-ms` / `--scheduler-tpot-ms` are distinct from
+scoring thresholds `--ttft-slo-ms` / `--tpot-slo-ms`. Specify both pairs explicitly
+for comparisons. `--scheduler-prefill-chunk` controls static chunk size;
+`--scheduler-min-prefill-chunk` is the SLO policy's minimum budget.
+
+`python -m benchmarks.serving.scheduler_experiment --help` lists the reproducible
+mixed-workload pilot arguments: three policies, two arrival intervals, three
+counterbalanced repeats, exact workload records, prefix metadata resets and
+untimed shape warmup. The script first checks teacher-prefix logits. Its default
+strict raw-logit guard currently fails on a repetitive 14B input, including the
+unchanged original-chunk256 control. `--exploratory-numerics` retains that failure
+explicitly and permits exploratory timing only; it is not a correctness pass.
+All ordinary performance runs use the original sampler.
+
+Scheduler V2 is opt-in with `--scheduler-policy slo-v2`; `slo-v1` aliases the
+unchanged `slo-aware` V1. `original` is still default. V2 progress/cost/overload
+controls are exposed as `--scheduler-v2-*`. See `docs/SCHEDULER_V2.md` for the
+algorithm, progress limits, revised numerical protocol and frozen held-out suite.
+`benchmarks.serving.scheduler_v2_correctness` captures logits and independent
+references; `benchmarks.serving.scheduler_v2_experiment` requires accepted 14B
+and small-model reports before running tuning, sweep and ablations. V1 artifacts
+are not overwritten. Metric-revision failures are kept as separate evidence.

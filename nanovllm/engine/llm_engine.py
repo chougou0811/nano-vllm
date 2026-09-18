@@ -8,7 +8,7 @@ import torch.multiprocessing as mp
 from nanovllm.config import Config
 from nanovllm.sampling_params import SamplingParams
 from nanovllm.engine.sequence import Sequence
-from nanovllm.engine.scheduler import Scheduler
+from nanovllm.engine.policy_scheduler import make_scheduler
 from nanovllm.engine.model_runner import ModelRunner
 
 
@@ -31,7 +31,7 @@ class LLMEngine:
         self.model_runner = ModelRunner(config, 0, self.events)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
-        self.scheduler = Scheduler(config)
+        self.scheduler = make_scheduler(config)
         atexit.register(self.exit)
 
     def exit(self):
@@ -40,10 +40,14 @@ class LLMEngine:
         for p in self.ps:
             p.join()
 
-    def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+    def add_request(self, prompt: str | list[int], sampling_params: SamplingParams,
+                    *, arrival_time_ns: int | None = None):
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
+        if arrival_time_ns is not None:
+            # Host-only metadata: Sequence's existing TP serialization is unchanged.
+            seq.arrival_time_ns = arrival_time_ns
         self.scheduler.add(seq)
 
     def step(self):

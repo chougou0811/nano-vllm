@@ -44,12 +44,24 @@ def parse_args(argv=None):
     parser.add_argument("--diagnostics", action="store_true")
     parser.add_argument("--prefix-probe", action="store_true")
     parser.add_argument("--burst-probe", action="store_true")
+    parser.add_argument("--scheduler-policy", choices=["original", "static", "slo-aware", "slo-v1", "slo-v2"], default="original")
+    parser.add_argument("--scheduler-prefill-chunk", type=int, default=256)
+    parser.add_argument("--scheduler-min-prefill-chunk", type=int, default=128)
+    parser.add_argument("--scheduler-ttft-ms", type=float, default=2000)
+    parser.add_argument("--scheduler-tpot-ms", type=float, default=100)
+    parser.add_argument("--scheduler-v2-min-chunk", type=int, default=256)
+    parser.add_argument("--scheduler-v2-max-chunk", type=int, default=1024)
+    parser.add_argument("--scheduler-v2-overload-chunk", type=int, default=512)
+    parser.add_argument("--scheduler-v2-overload", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--scheduler-v2-cost-model", choices=["bucketed", "scalar"], default="bucketed")
     args = parser.parse_args(argv)
     for name in ["tensor_parallel_size", "max_model_len", "max_num_batched_tokens",
-                 "max_num_seqs", "num_requests", "prompt_length", "output_length", "concurrency", "repeats"]:
+                 "max_num_seqs", "num_requests", "prompt_length", "output_length", "concurrency", "repeats",
+                 "scheduler_prefill_chunk", "scheduler_min_prefill_chunk"]:
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
-    for name in ["timeout_s", "temperature", "gpu_memory_utilization", "ttft_slo_ms", "tpot_slo_ms"]:
+    for name in ["timeout_s", "temperature", "gpu_memory_utilization", "ttft_slo_ms", "tpot_slo_ms",
+                 "scheduler_ttft_ms", "scheduler_tpot_ms"]:
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
             parser.error(f"{name} must be finite and positive")
@@ -57,6 +69,8 @@ def parse_args(argv=None):
         parser.error("arrival interval must be finite and nonnegative")
     if args.warmup_requests < 0 or args.gpu_memory_utilization > 1 or args.tensor_parallel_size > 8:
         parser.error("Invalid warmup, memory utilization or TP size")
+    if not 0 < args.scheduler_v2_min_chunk <= args.scheduler_v2_overload_chunk <= args.scheduler_v2_max_chunk:
+        parser.error("V2 chunks must satisfy 0 < minimum <= overload <= maximum")
     if args.temperature <= 1e-10:
         parser.error("Original sampler requires temperature > 1e-10")
     if args.prompt_length + args.output_length > args.max_model_len:
@@ -101,6 +115,10 @@ def main(argv=None):
         engine_config = {name: getattr(args, name) for name in [
             "tensor_parallel_size", "max_model_len", "max_num_batched_tokens", "max_num_seqs",
             "gpu_memory_utilization", "enforce_eager"]}
+        engine_config.update({name: getattr(args, name) for name in ["scheduler_policy",
+            "scheduler_prefill_chunk", "scheduler_min_prefill_chunk", "scheduler_ttft_ms", "scheduler_tpot_ms",
+            "scheduler_v2_min_chunk", "scheduler_v2_max_chunk", "scheduler_v2_overload_chunk",
+            "scheduler_v2_overload", "scheduler_v2_cost_model"]})
         write_json(output / "workload.json", [workload_data(w) for w in workloads])
         print("Verifying model checksums and capturing reproducibility metadata...", flush=True)
         manifest = capture_manifest(args, engine_config, [workload_data(w) for w in workloads], output, argv)
@@ -162,7 +180,7 @@ def main(argv=None):
                 diagnostics.mark(name)
             print(f"Starting {name}: {args.arrival_mode}", flush=True)
             result = run_workload(engine, workload, sampling, args.concurrency, round(args.timeout_s * 1e9),
-                                  arrival_mode=args.arrival_mode)
+                                  arrival_mode=args.arrival_mode, propagate_arrival=True)
             released = not engine.scheduler.block_manager.used_block_ids
             summary, rows = summarize(result, args.ttft_slo_ms, args.tpot_slo_ms)
             trial_manifest = dict(manifest, repeat=repeat, kv_released_after_measurement=released)

@@ -65,7 +65,8 @@ def capture_manifest(args, engine_config, specs, output_dir, argv):
         write_json(output_dir / "model_manifest.json", provenance)
     snapshot = output_dir / "source_snapshot"
     sources = set(repo.glob("nanovllm/**/*.py")) | set(repo.glob("benchmarks/**/*.py"))
-    sources |= set(repo.glob("tests/test_serving*.py"))
+    sources |= set(repo.glob("tests/test_*.py"))
+    sources |= set(repo.glob("docs/*.md"))
     sources |= {repo / "pyproject.toml", repo / "AGENTS.md", repo / "benchmarks/serving/README.md"}
     hashes = {}
     for path in sorted(sources):
