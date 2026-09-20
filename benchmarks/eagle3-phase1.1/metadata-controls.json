@@ -1,0 +1,1427 @@
+[
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-00-rank-0.json",
+    "parallel": {
+      "positions": [
+        23,
+        24,
+        25,
+        26
+      ],
+      "slots": [
+        23,
+        24,
+        25,
+        26
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        27
+      ],
+      "max_q": 4,
+      "max_k": 27
+    },
+    "serial": [
+      {
+        "position": 23,
+        "slot": 23,
+        "context_len": 24,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 24,
+        "slot": 24,
+        "context_len": 25,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 25,
+        "slot": 25,
+        "context_len": 26,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 26,
+        "slot": 26,
+        "context_len": 27,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-01-rank-0.json",
+    "parallel": {
+      "positions": [
+        25,
+        26,
+        27,
+        28
+      ],
+      "slots": [
+        25,
+        26,
+        27,
+        28
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        29
+      ],
+      "max_q": 4,
+      "max_k": 29
+    },
+    "serial": [
+      {
+        "position": 25,
+        "slot": 25,
+        "context_len": 26,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 26,
+        "slot": 26,
+        "context_len": 27,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 27,
+        "slot": 27,
+        "context_len": 28,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 28,
+        "slot": 28,
+        "context_len": 29,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-02-rank-0.json",
+    "parallel": {
+      "positions": [
+        27,
+        28,
+        29,
+        30
+      ],
+      "slots": [
+        27,
+        28,
+        29,
+        30
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        31
+      ],
+      "max_q": 4,
+      "max_k": 31
+    },
+    "serial": [
+      {
+        "position": 27,
+        "slot": 27,
+        "context_len": 28,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 28,
+        "slot": 28,
+        "context_len": 29,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 29,
+        "slot": 29,
+        "context_len": 30,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 30,
+        "slot": 30,
+        "context_len": 31,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-03-rank-0.json",
+    "parallel": {
+      "positions": [
+        28,
+        29,
+        30,
+        31
+      ],
+      "slots": [
+        28,
+        29,
+        30,
+        31
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        32
+      ],
+      "max_q": 4,
+      "max_k": 32
+    },
+    "serial": [
+      {
+        "position": 28,
+        "slot": 28,
+        "context_len": 29,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 29,
+        "slot": 29,
+        "context_len": 30,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 30,
+        "slot": 30,
+        "context_len": 31,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 31,
+        "slot": 31,
+        "context_len": 32,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-04-rank-0.json",
+    "parallel": {
+      "positions": [
+        29,
+        30,
+        31,
+        32
+      ],
+      "slots": [
+        29,
+        30,
+        31,
+        32
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        33
+      ],
+      "max_q": 4,
+      "max_k": 33
+    },
+    "serial": [
+      {
+        "position": 29,
+        "slot": 29,
+        "context_len": 30,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 30,
+        "slot": 30,
+        "context_len": 31,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 31,
+        "slot": 31,
+        "context_len": 32,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 32,
+        "slot": 32,
+        "context_len": 33,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-05-rank-0.json",
+    "parallel": {
+      "positions": [
+        30,
+        31,
+        32,
+        33
+      ],
+      "slots": [
+        30,
+        31,
+        32,
+        33
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        34
+      ],
+      "max_q": 4,
+      "max_k": 34
+    },
+    "serial": [
+      {
+        "position": 30,
+        "slot": 30,
+        "context_len": 31,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 31,
+        "slot": 31,
+        "context_len": 32,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 32,
+        "slot": 32,
+        "context_len": 33,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 33,
+        "slot": 33,
+        "context_len": 34,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-06-rank-0.json",
+    "parallel": {
+      "positions": [
+        32,
+        33,
+        34,
+        35
+      ],
+      "slots": [
+        32,
+        33,
+        34,
+        35
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        36
+      ],
+      "max_q": 4,
+      "max_k": 36
+    },
+    "serial": [
+      {
+        "position": 32,
+        "slot": 32,
+        "context_len": 33,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 33,
+        "slot": 33,
+        "context_len": 34,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 34,
+        "slot": 34,
+        "context_len": 35,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 35,
+        "slot": 35,
+        "context_len": 36,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-07-rank-0.json",
+    "parallel": {
+      "positions": [
+        34,
+        35,
+        36,
+        37
+      ],
+      "slots": [
+        34,
+        35,
+        36,
+        37
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        38
+      ],
+      "max_q": 4,
+      "max_k": 38
+    },
+    "serial": [
+      {
+        "position": 34,
+        "slot": 34,
+        "context_len": 35,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 35,
+        "slot": 35,
+        "context_len": 36,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 36,
+        "slot": 36,
+        "context_len": 37,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 37,
+        "context_len": 38,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-08-rank-0.json",
+    "parallel": {
+      "positions": [
+        35,
+        36,
+        37,
+        38
+      ],
+      "slots": [
+        35,
+        36,
+        37,
+        38
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        39
+      ],
+      "max_q": 4,
+      "max_k": 39
+    },
+    "serial": [
+      {
+        "position": 35,
+        "slot": 35,
+        "context_len": 36,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 36,
+        "slot": 36,
+        "context_len": 37,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 37,
+        "context_len": 38,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 38,
+        "slot": 38,
+        "context_len": 39,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-09-rank-0.json",
+    "parallel": {
+      "positions": [
+        36,
+        37,
+        38,
+        39
+      ],
+      "slots": [
+        36,
+        37,
+        38,
+        39
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        40
+      ],
+      "max_q": 4,
+      "max_k": 40
+    },
+    "serial": [
+      {
+        "position": 36,
+        "slot": 36,
+        "context_len": 37,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 37,
+        "context_len": 38,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 38,
+        "slot": 38,
+        "context_len": 39,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 39,
+        "slot": 39,
+        "context_len": 40,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-10-rank-0.json",
+    "parallel": {
+      "positions": [
+        38,
+        39,
+        40,
+        41
+      ],
+      "slots": [
+        38,
+        39,
+        40,
+        41
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        42
+      ],
+      "max_q": 4,
+      "max_k": 42
+    },
+    "serial": [
+      {
+        "position": 38,
+        "slot": 38,
+        "context_len": 39,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 39,
+        "slot": 39,
+        "context_len": 40,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 40,
+        "slot": 40,
+        "context_len": 41,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 41,
+        "slot": 41,
+        "context_len": 42,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-11-rank-0.json",
+    "parallel": {
+      "positions": [
+        39,
+        40,
+        41,
+        42
+      ],
+      "slots": [
+        39,
+        40,
+        41,
+        42
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        43
+      ],
+      "max_q": 4,
+      "max_k": 43
+    },
+    "serial": [
+      {
+        "position": 39,
+        "slot": 39,
+        "context_len": 40,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 40,
+        "slot": 40,
+        "context_len": 41,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 41,
+        "slot": 41,
+        "context_len": 42,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 42,
+        "slot": 42,
+        "context_len": 43,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-0/iteration-12-rank-0.json",
+    "parallel": {
+      "positions": [
+        41,
+        42,
+        43,
+        44
+      ],
+      "slots": [
+        41,
+        42,
+        43,
+        44
+      ],
+      "block_table": [
+        [
+          0
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        45
+      ],
+      "max_q": 4,
+      "max_k": 45
+    },
+    "serial": [
+      {
+        "position": 41,
+        "slot": 41,
+        "context_len": 42,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 42,
+        "slot": 42,
+        "context_len": 43,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 43,
+        "slot": 43,
+        "context_len": 44,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "position": 44,
+        "slot": 44,
+        "context_len": 45,
+        "block_table": [
+          [
+            0
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-00-rank-0.json",
+    "parallel": {
+      "positions": [
+        28,
+        29,
+        30,
+        31
+      ],
+      "slots": [
+        284,
+        285,
+        286,
+        287
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        32
+      ],
+      "max_q": 4,
+      "max_k": 32
+    },
+    "serial": [
+      {
+        "position": 28,
+        "slot": 284,
+        "context_len": 29,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 29,
+        "slot": 285,
+        "context_len": 30,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 30,
+        "slot": 286,
+        "context_len": 31,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 31,
+        "slot": 287,
+        "context_len": 32,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-01-rank-0.json",
+    "parallel": {
+      "positions": [
+        30,
+        31,
+        32,
+        33
+      ],
+      "slots": [
+        286,
+        287,
+        288,
+        289
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        34
+      ],
+      "max_q": 4,
+      "max_k": 34
+    },
+    "serial": [
+      {
+        "position": 30,
+        "slot": 286,
+        "context_len": 31,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 31,
+        "slot": 287,
+        "context_len": 32,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 32,
+        "slot": 288,
+        "context_len": 33,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 33,
+        "slot": 289,
+        "context_len": 34,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-02-rank-0.json",
+    "parallel": {
+      "positions": [
+        34,
+        35,
+        36,
+        37
+      ],
+      "slots": [
+        290,
+        291,
+        292,
+        293
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        38
+      ],
+      "max_q": 4,
+      "max_k": 38
+    },
+    "serial": [
+      {
+        "position": 34,
+        "slot": 290,
+        "context_len": 35,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 35,
+        "slot": 291,
+        "context_len": 36,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 36,
+        "slot": 292,
+        "context_len": 37,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 293,
+        "context_len": 38,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-03-rank-0.json",
+    "parallel": {
+      "positions": [
+        35,
+        36,
+        37,
+        38
+      ],
+      "slots": [
+        291,
+        292,
+        293,
+        294
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        39
+      ],
+      "max_q": 4,
+      "max_k": 39
+    },
+    "serial": [
+      {
+        "position": 35,
+        "slot": 291,
+        "context_len": 36,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 36,
+        "slot": 292,
+        "context_len": 37,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 293,
+        "context_len": 38,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 38,
+        "slot": 294,
+        "context_len": 39,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-04-rank-0.json",
+    "parallel": {
+      "positions": [
+        36,
+        37,
+        38,
+        39
+      ],
+      "slots": [
+        292,
+        293,
+        294,
+        295
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        40
+      ],
+      "max_q": 4,
+      "max_k": 40
+    },
+    "serial": [
+      {
+        "position": 36,
+        "slot": 292,
+        "context_len": 37,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 37,
+        "slot": 293,
+        "context_len": 38,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 38,
+        "slot": 294,
+        "context_len": 39,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 39,
+        "slot": 295,
+        "context_len": 40,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  },
+  {
+    "file": "/root/autodl-tmp/benchmarks/eagle3-phase1.1/bf16-final/case-1/iteration-05-rank-0.json",
+    "parallel": {
+      "positions": [
+        37,
+        38,
+        39,
+        40
+      ],
+      "slots": [
+        293,
+        294,
+        295,
+        296
+      ],
+      "block_table": [
+        [
+          1
+        ]
+      ],
+      "cu_q": [
+        0,
+        4
+      ],
+      "cu_k": [
+        0,
+        41
+      ],
+      "max_q": 4,
+      "max_k": 41
+    },
+    "serial": [
+      {
+        "position": 37,
+        "slot": 293,
+        "context_len": 38,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 38,
+        "slot": 294,
+        "context_len": 39,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 39,
+        "slot": 295,
+        "context_len": 40,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      },
+      {
+        "position": 40,
+        "slot": 296,
+        "context_len": 41,
+        "block_table": [
+          [
+            1
+          ]
+        ]
+      }
+    ],
+    "positions_slots_lengths_match": true
+  }
+]

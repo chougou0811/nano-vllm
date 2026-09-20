@@ -88,6 +88,10 @@ class ModelRunner:
         method = getattr(self, method_name, None)
         return method(*args)
 
+    def eagle3(self, operation, payload):
+        from nanovllm.speculative.runtime import dispatch
+        return dispatch(self, operation, payload)
+
     def warmup_model(self):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()

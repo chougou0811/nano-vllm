@@ -1,0 +1,60 @@
+{
+  "outcome": 2,
+  "classification": "BF16 shape-dependent GEMV/GEMM rounding and accumulated prefix numerical drift",
+  "production_source_unchanged": true,
+  "unit_tests_passed": 69,
+  "runs": {
+    "bf16-final": {
+      "rank_iterations": 38,
+      "commit_checks": 38,
+      "commits_all_pass": true,
+      "first_operators": [
+        "00.qkv"
+      ],
+      "query_count": 76,
+      "all_five_paths_top1_equal": false,
+      "serial_parallel_logit_max": 0.5,
+      "all_operator_values_finite": true,
+      "fixed_qkv_attention_comparisons": 1520,
+      "fixed_qkv_all_three_paths_exact": true,
+      "q1_decode_varlen_exact": true
+    },
+    "fp32-small-final": {
+      "rank_iterations": 38,
+      "commit_checks": 38,
+      "commits_all_pass": true,
+      "first_operators": [
+        "00.qkv"
+      ],
+      "query_count": 76,
+      "all_five_paths_top1_equal": true,
+      "serial_parallel_logit_max": 3.6716461181640625e-05,
+      "all_operator_values_finite": true
+    }
+  },
+  "hf_fp32": {
+    "passed": 16,
+    "total": 16,
+    "max_abs": 4.494190216064453e-05
+  },
+  "local_dot_controls": {
+    "count": 8,
+    "all_inputs_identical": true,
+    "fp32_serial_parallel_max": 1.4901161193847656e-07,
+    "fp32_fp64_max": 1.1920928955078125e-07,
+    "disabling_bf16_reduced_reduction_did_not_remove_difference": true
+  },
+  "metadata_checks": {
+    "passed": 19,
+    "total": 19
+  },
+  "invalid_controls_retained": {
+    "bf16": "Initial shared-RoPE hook mislabeled repeated captures; superseded by layer-gated bf16-final.",
+    "fp32-small": "Unmodified BF16-oriented in-place RMSNorm aliases FP32 residual; HF 0/16. Not valid evidence.",
+    "precision-controls": "Initial local dot controls valid; associated HF comparison used invalid FP32 norm."
+  },
+  "strict_original_token_parity_restored": false,
+  "numerical_contract": "User accepted docs/EAGLE3_NUMERICAL_CONTRACT.md on 2026-09-20; historical strict-parity failures remain failures.",
+  "phase1_gate": "numerical semantics accepted under the documented BF16 cross-shape contract; strict serial parity not guaranteed.",
+  "raw_root": "/root/autodl-tmp/benchmarks/eagle3-phase1.1"
+}

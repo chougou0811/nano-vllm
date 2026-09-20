@@ -193,3 +193,8 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+.eagle-local-cache/
+benchmarks/eagle3-phase1/artifacts/
+benchmarks/eagle3-phase1.1/layer-operator-summary.csv
+benchmarks/eagle3-phase*/**/*.pt
+benchmarks/eagle3-phase*/**/*.bin
