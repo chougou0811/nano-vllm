@@ -7,6 +7,7 @@ from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.sampling_params import SamplingParams
 from .acceptance import accept_greedy
 from .draft import ReferenceDraft
+from .draft_state import DraftState
 
 
 def check_ranks(rows):
@@ -15,7 +16,8 @@ def check_ranks(rows):
 
 
 def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,audit,
-             proposal_override=None,eos_override=None,reference_probe=None):
+             proposal_override=None,eos_override=None,reference_probe=None,
+             draft_state_mode="full_rebuild",state_probe=None):
     runner = engine.model_runner
     if not runner.enforce_eager:
         raise ValueError("Phase 1 requires eager execution")
@@ -39,6 +41,7 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
         raise ValueError("Insufficient free KV pages for exclusive request capacity")
     seq = Sequence(tokens,SamplingParams(max_tokens=max_tokens,ignore_eos=ignore_eos))
     steps,token_times = [],[]
+    draft_state = DraftState(engine._eagle_draft, seq.seq_id, draft_state_mode) if k else None
     start = perf_counter_ns()
     bm.allocate(lease,0)
     begun = False
@@ -63,7 +66,9 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
             p_start = perf_counter_ns()
             if count:
                 state = runner._eagle_state
-                proposals = engine._eagle_draft.propose(state["features"],state["tokens"],count)
+                proposals = draft_state.propose(state["features"],state["tokens"],count,owner=seq.seq_id)
+                if state_probe is not None:
+                    state_probe(draft_state,state,proposals,len(steps))
                 if reference_probe is not None:
                     reference_probe(engine._eagle_draft,state,proposals)
                 if proposal_override is not None:
@@ -81,6 +86,9 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
                 reference_probe(None,verification,(seq.last_token,proposals,result))
             ranks = call("commit",dict(accepted=result.accepted,tokens=result.tokens))
             check_ranks(ranks)
+            if draft_state is not None:
+                state = runner._eagle_state
+                draft_state.committed(state["cached"],state["tokens"],owner=seq.seq_id)
             for token in result.tokens:
                 seq.append_token(token)
             now = perf_counter_ns()
@@ -90,7 +98,8 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
                 fallback_token=result.fallback,rejection=int(result.matched < len(proposals)),
                 discarded=len(proposals)-result.accepted,proposal_latency_ns=p_end-p_start,
                 verification_latency_ns=v_end-p_end,commit_ns=now,ranks=ranks,
-                speculator_forwards=count))
+                speculator_forwards=count,
+                draft_state=dict(draft_state.last_metrics) if count else {}))
             if result.finished:
                 break
         seq.status = SequenceStatus.FINISHED
@@ -100,6 +109,8 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
                 close_status = call("close",{})
                 check_ranks(close_status)
         finally:
+            if draft_state is not None:
+                draft_state.close()
             bm.deallocate(lease)
     end = perf_counter_ns()
     return dict(token_ids=seq.completion_token_ids,text=engine.tokenizer.decode(seq.completion_token_ids),
@@ -107,4 +118,6 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
         steps=steps,k=k,target_forward_count=1+len(steps),
         speculator_forward_count=sum(s["speculator_forwards"] for s in steps),
         kv_released=not bm.used_block_ids,spec_state_released=runner._eagle_state is None,
+        draft_state_released=draft_state is None or (draft_state.closed and draft_state.past is None),
+        draft_state_mode=draft_state_mode,
         close_ranks=close_status,prefill_ranks=first["ranks"])
