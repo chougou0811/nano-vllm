@@ -1,0 +1,45 @@
+{
+  "access_date": "2026-09-25",
+  "local_assets": {
+    "target_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+    "draft_revision": "3d13517724e81cb409ddf1d4650772ec52f1e18e",
+    "reference_revision_from_phase1_manifest": "cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b",
+    "reference_is_exported_tree_not_git_clone": true,
+    "weights_reused_without_download": true,
+    "exact_draft_training_target_revision_still_unknown": true,
+    "sha256": {
+      "/root/autodl-tmp/models/Qwen3-14B/config.json": "e73c3664ca09b10a673fef0c22e8a6b456201d49bd4713c9691f775720e8857a",
+      "/root/autodl-tmp/models/Qwen3-14B/tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+      "/root/autodl-tmp/models/Qwen3-14B_eagle3/config.json": "3b0e2906a1189d11f10284695c0f4d72c87405793c9b101274516e8059164152",
+      "/root/autodl-tmp/models/Qwen3-14B_eagle3/download_manifest.json": "2bc9fb6768ad6be5137fe08fd2650f9487462fdb9701412add0b81eba7cbb62b",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/cnets.py": "b0e2512db4529c9689ffd768e9a2812059a5715d786686a131a751c56fbf3292",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/ea_model.py": "f834fc37d350b9109ad91ac27a29eb2be59153dc0aac48ab753c6e43aa91d506",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/modeling_qwen3_kv.py": "a3cc5ce2f78239da5d26c0dc19a5a6293a1ba330f0e43675fc857bb6a7957a46",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/utils.py": "68dadf1977dd76624f87d0dc5ce9f840783ccaeb7554861f1206daa664367fe9",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/configs.py": "14ae62877cd9ab12c9076fc70fe940714b9ca980865b00ba974de340df2d1ac5",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/utils_c.py": "fa7bee5ea870200756bd48bb27c1dbfb2e8f1d42f4e9c832d6b5d1681ca97f58",
+      "/root/autodl-tmp/references/eagle-pinned/eagle/model/choices.py": "5ab95137f63b61f756057927b2af427ffa0bc351384d99e334a9da853fcbfa7e"
+    }
+  },
+  "sources": [
+    {
+      "project": "NCCL",
+      "repo": "https://github.com/NVIDIA/nccl",
+      "tag": "v2.27.3-1",
+      "commit": "72d2432094d6ae36abd6e511c3a16a2d052dbf94",
+      "path": "src/misc/strongstream.cc",
+      "symbols": ["ncclStrongStreamAcquire", "ncclStrongStreamRelease"],
+      "url": "https://github.com/NVIDIA/nccl/blob/72d2432094d6ae36abd6e511c3a16a2d052dbf94/src/misc/strongstream.cc",
+      "claim_type": "source_fact",
+      "claim": "With mixing enabled, everCaptured enables an event wait in later noncaptured acquire and event record in release. Capture sets the flag; graph destruction does not reset it in this source.",
+      "limitation": "This identifies additional ordering operations, not their full end-to-end wall cost."
+    },
+    {
+      "project": "NVIDIA NCCL documentation",
+      "url": "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-mixing-support",
+      "claim_type": "official_contract",
+      "claim": "With mixing disabled, launching noncaptured work during an outstanding graph on the same communicator is unsupported regardless of stream ordering.",
+      "decision": "Keep default mixing in all real replay and serving. Disabled-mixing control captures but never replays."
+    }
+  ]
+}

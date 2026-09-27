@@ -1,0 +1,1669 @@
+--- baseline/benchmarks/serving/eagle3_phase53.py
++++ phase5.3/benchmarks/serving/eagle3_phase53.py
+@@ -0,0 +1,232 @@
++"""Phase 5.3 bounded experiment: real-state capture, then draft-only gate."""
++import argparse
++import copy
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++from time import perf_counter_ns
++from types import SimpleNamespace
++
++import torch
++from transformers import AutoConfig
++
++from benchmarks.serving.eagle3_phase42 import (
++    TARGET, DRAFT, REFERENCE, Request, run_closed_loop)
++from nanovllm.speculative.concurrent_engine import ConcurrentLLMEngine
++from nanovllm.speculative.draft import ReferenceDraft
++from nanovllm.speculative.draft_state import DraftState
++from nanovllm.speculative.draft_batch import DraftBatchExecutor, DraftBatchInput
++
++
++ROOT = Path('/root/autodl-tmp/eagle3-phase5.3-20260925')
++GROUPS = ((255, 256), (255, 256, 257), (511, 512, 513, 1025))
++
++
++def tree(value, fn):
++    if isinstance(value, torch.Tensor):
++        return fn(value)
++    if isinstance(value, (tuple, list)):
++        return tuple(tree(v, fn) for v in value)
++    return value
++
++
++def capture():
++    out = ROOT/'capture'
++    out.mkdir(exist_ok=False)
++    data = dict(command=[sys.executable, *sys.argv], groups=GROUPS, trials=[], samples=[],
++                gpu=subprocess.check_output(['nvidia-smi'], text=True), normal_exit=False)
++    engine = ConcurrentLLMEngine(TARGET, draft_path=DRAFT, reference_path=REFERENCE,
++        tensor_parallel_size=2, enforce_eager=True, max_model_len=2048,
++        max_num_batched_tokens=2048, max_num_seqs=4, gpu_memory_utilization=.7,
++        scheduler_policy='original', audit=True)
++    original = DraftState.propose
++    captured = {}
++    try:
++        for group, lengths in enumerate(GROUPS):
++            counts = {}
++            def propose(state, features, tokens, k, *, owner):
++                iteration = counts.get(owner, 0)
++                counts[owner] = iteration+1
++                if iteration < 3:
++                    captured.setdefault(owner, []).append(dict(
++                        features=features.detach().cpu().clone(), tokens=tuple(tokens), k=k,
++                        cursor=state.cursor, conditioned_tokens=state.conditioned_tokens,
++                        past=tree(state.past, lambda t: t.detach().cpu().clone()),
++                        generation=engine.speculative_coordinator.requests[owner].generation,
++                        iteration=iteration, seq_id=owner))
++                return original(state, features, tokens, k, owner=owner)
++            DraftState.propose = propose
++            phrase = engine.tokenizer.encode(
++                'A scientist records measured values and explains each observation. '*400,
++                add_special_tokens=False)
++            requests = [Request(i, ([1000+group*7+i]+phrase)[:n], 16) for i,n in enumerate(lengths)]
++            result = run_closed_loop(engine, 'speculative', requests, len(lengths))
++            data['trials'].append(result)
++            ids = [r.sequence_id for r in requests]
++            samples = [[captured[owner][iteration] for owner in ids] for iteration in range(3)]
++            path = out/f'group{group}.pt'
++            torch.save(samples, path)
++            data['samples'].append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
++            print('CAPTURE', group, lengths, flush=True)
++            captured.clear()
++        data['normal_exit'] = True
++    finally:
++        DraftState.propose = original
++        engine.exit()
++        (out/'manifest.json').write_text(json.dumps(data, indent=2))
++
++
++def make_items(samples, draft, dtype=torch.bfloat16):
++    items = []
++    for sample in samples:
++        state = DraftState(draft, sample['seq_id'])
++        state.request_generation = sample['generation']
++        state.cursor = sample['cursor']
++        state.conditioned_tokens = sample['conditioned_tokens']
++        state.past = tree(sample['past'], lambda t: t.to(device=draft.device, dtype=dtype))
++        request = SimpleNamespace(seq_id=sample['seq_id'], generation=sample['generation'])
++        items.append(DraftBatchInput(state, request, request.generation,
++            sample['features'].to(device=draft.device, dtype=dtype), sample['tokens'], sample['k']))
++    return items
++
++
++@torch.inference_mode()
++def serial_generation(prepared, observer=None, forced=None):
++    begin = perf_counter_ns()
++    result = []
++    for row,p in enumerate(prepared):
++        model, device = p.item.state.draft.model, p.hidden.device
++        hidden, past = p.hidden, p.confirmed
++        ids = []
++        for step in range(p.item.k):
++            logits = model.lm_head(model.norm(hidden))[:, -1]
++            index = logits[0].argmax()
++            token = int((index+model.d2t[index]).item())
++            ids.append(token)
++            if observer:
++                observer(row, step, hidden, past, logits)
++            if step+1 < p.item.k:
++                feed = forced[row][step] if forced else token
++                hidden,past = model(hidden, input_ids=torch.tensor([[feed]], device=device),
++                                    past_key_values=past, use_cache=True)
++        result.append(ids)
++    return result, dict(generation_ns=perf_counter_ns()-begin,
++                        feedback_forwards=sum(p.item.k-1 for p in prepared))
++
++
++def stats(a, b):
++    diff = (a.float()-b.float()).abs()
++    return dict(max_abs=diff.max().item(), mean_abs=diff.mean().item(),
++                finite=bool(torch.isfinite(a).all() and torch.isfinite(b).all()))
++
++
++@torch.inference_mode()
++def compare(prepared, executor):
++    serial_trace, batch_trace = {}, {}
++    def serial_observer(row, step, hidden, past, logits):
++        serial_trace[row, step] = (hidden.clone(), tree(past, torch.clone), logits.clone())
++    def batch_observer(step, active, hidden, past, logits, positions, mask):
++        for row,index in enumerate(active):
++            valid = mask[row].nonzero().flatten()
++            kv = tuple(tuple(t[row:row+1].index_select(2, valid) for t in layer) for layer in past)
++            batch_trace[index, step] = (hidden[row:row+1].clone(), kv, logits[row:row+1].clone())
++    serial, _ = serial_generation(prepared, serial_observer)
++    executor.observer = batch_observer
++    batch = executor.generate(prepared, publish=False)
++    executor.observer = None
++    rows = []
++    for key, (h, kv, logits) in serial_trace.items():
++        bh, bkv, blogits = batch_trace[key]
++        rows.append(dict(row=key[0], step=key[1], hidden=stats(h,bh), logits=stats(logits,blogits),
++            kv=[stats(a,b) for la,lb in zip(kv,bkv) for a,b in zip(la,lb)],
++            serial_top1=int(logits.argmax()), batch_top1=int(blogits.argmax()),
++            serial_margin=float(logits.float().topk(2).values.diff().abs().item())))
++    return dict(serial=serial, batch=batch, proposals_equal=serial==batch, rows=rows)
++
++
++def isolated():
++    out = ROOT/'isolated'
++    out.mkdir(exist_ok=False)
++    torch.manual_seed(53)
++    torch.set_num_threads(4)
++    draft = ReferenceDraft(DRAFT, REFERENCE, TARGET,
++        AutoConfig.from_pretrained(TARGET, local_files_only=True), torch.device('cuda:0'))
++    executor = DraftBatchExecutor()
++    data = dict(command=[sys.executable, *sys.argv], provenance=draft.provenance,
++        versions=dict(torch=torch.__version__, cuda=torch.version.cuda), groups=[], normal_exit=False)
++    for group in range(len(GROUPS)):
++        for iteration, samples in enumerate(torch.load(ROOT/f'capture/group{group}.pt', weights_only=True)):
++            items = make_items(samples, draft)
++            prepared = executor.prepare(items)
++            row = dict(group=group, iteration=iteration, lengths=[p.end for p in prepared],
++                       cursors=[p.start for p in prepared], k=[p.item.k for p in prepared], trials=[])
++            # Oracle is the untouched Phase2 method, from the same confirmed state.
++            oracle_items = make_items(samples, draft)
++            oracle = [i.state.propose(i.features,i.tokens,i.k,owner=i.request.seq_id) for i in oracle_items]
++            check = compare(prepared, executor)
++            check['serial_matches_frozen_oracle'] = check['serial'] == oracle
++            check['confirmed_kv_exact'] = all(torch.equal(t,u)
++                for p,i in zip(prepared,oracle_items) for la,lb in zip(p.confirmed,i.state.past)
++                for t,u in zip(la,lb))
++            row['correctness'] = check
++            for _ in range(2):
++                serial_generation(prepared)
++                executor.generate(prepared, publish=False)
++            for repeat in range(5):
++                for mode in (('serial','batch') if repeat%2 == 0 else ('batch','serial')):
++                    torch.cuda.synchronize()
++                    torch.cuda.reset_peak_memory_stats()
++                    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
++                    start.record()
++                    if mode == 'serial':
++                        tokens, metrics = serial_generation(prepared)
++                    else:
++                        tokens = executor.generate(prepared, publish=False)
++                        metrics = dict(executor.last_metrics)
++                    end.record()
++                    torch.cuda.synchronize()
++                    row['trials'].append(dict(mode=mode, repeat=repeat, metrics=metrics,
++                        gpu_stream_ms=start.elapsed_time(end), tokens=tokens,
++                        peak_allocated=torch.cuda.max_memory_allocated(),
++                        peak_reserved=torch.cuda.max_memory_reserved()))
++            data['groups'].append(row)
++            (out/'manifest.json').write_text(json.dumps(data,indent=2))
++            print('ISOLATED',group,iteration,check['proposals_equal'], flush=True)
++            if iteration == 0:
++                for mode in ('serial', 'batch'):
++                    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
++                                                           torch.profiler.ProfilerActivity.CUDA]) as prof:
++                        if mode == 'serial':
++                            serial_generation(prepared)
++                        else:
++                            executor.generate(prepared, publish=False)
++                        torch.cuda.synchronize()
++                    prof.export_chrome_trace(str(out/f'group{group}-{mode}.trace.json'))
++            del prepared, items, oracle_items
++    # Same checkpoint, FP32 arithmetic control. No production dtype is changed.
++    torch.backends.cuda.matmul.allow_tf32 = False
++    draft.model.float()
++    data['fp32_controls'] = []
++    for group in range(len(GROUPS)):
++        for iteration, samples in enumerate(torch.load(ROOT/f'capture/group{group}.pt', weights_only=True)):
++            items = make_items(samples, draft, torch.float32)
++            prepared = executor.prepare(items)
++            data['fp32_controls'].append(dict(group=group, iteration=iteration,
++                                              comparison=compare(prepared, executor)))
++            del prepared, items
++    data['normal_exit'] = True
++    (out/'manifest.json').write_text(json.dumps(data,indent=2))
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument('stage', choices=('capture','isolated'))
++    args = parser.parse_args()
++    (capture if args.stage=='capture' else isolated)()
++
++
++if __name__ == '__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_analysis.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_analysis.py
+@@ -0,0 +1,109 @@
++"""Offline Phase5.3 summary, preserving incomplete/failed experiments."""
++from collections import Counter, defaultdict
++import hashlib
++import json
++import math
++from pathlib import Path
++import statistics
++
++from benchmarks.serving.eagle3_phase53 import ROOT
++
++
++OUT = Path('benchmarks/eagle3-phase5_3')
++
++
++def geomean(values):
++    return math.exp(statistics.mean(math.log(v) for v in values)) if values else None
++
++
++def union_duration(events):
++    intervals = sorted((e['ts'],e['ts']+e['dur']) for e in events)
++    result, end = 0, -math.inf
++    for start, stop in intervals:
++        result += max(0,stop-max(start,end))
++        end = max(end,stop)
++    return result
++
++
++def main():
++    isolated = json.loads((ROOT/'isolated/manifest.json').read_text())
++    groups = []
++    for group in range(3):
++        cells = [r for r in isolated['groups'] if r['group']==group]
++        trials = [t for r in cells for t in r['trials']]
++        wall = {mode:sum(t['metrics']['generation_ns'] for t in trials if t['mode']==mode)/1e6
++                for mode in ('serial','batch')}
++        batch = [t['metrics'] for t in trials if t['mode']=='batch']
++        groups.append(dict(batch_size=group+2,paired_repeats=len(batch),wall_ms=wall,
++            reduction=1-wall['batch']/wall['serial'],
++            median_ms={m:statistics.median(t['metrics']['generation_ns']/1e6 for t in trials if t['mode']==m)
++                       for m in ('serial','batch')},
++            breakdown_mean_ms={k:statistics.mean(t[k]/1e6 for t in batch) for k in
++                ('packing_ns','mask_position_ns','gather_ns','model_submit_ns','head_read_ns','publish_ns')},
++            scratch_bytes=max(t['scratch_bytes'] for t in batch),
++            baseline_feedback_forwards=(group+2)*2,batched_feedback_forwards=2,
++            baseline_total_draft_forwards=(group+2)*3,batched_total_draft_forwards=(group+2)+2,
++            peak_allocated={m:max(t['peak_allocated'] for t in trials if t['mode']==m) for m in ('serial','batch')}))
++    profiles = []
++    for path in sorted((ROOT/'isolated').glob('*.trace.json')):
++        events = json.loads(path.read_text())['traceEvents']
++        kernels = [e for e in events if e.get('cat')=='kernel']
++        runtime = [e for e in events if e.get('cat')=='cuda_runtime']
++        profiles.append(dict(path=str(path),kernels=len(kernels),gpu_kernel_union_ms=union_duration(kernels)/1000,
++            gpu_kernel_sum_ms=sum(e['dur'] for e in kernels)/1000,
++            cuda_api_union_ms=union_duration(runtime)/1000))
++    manifests = []
++    aggregate = defaultdict(list)
++    cells_out = []
++    for path in sorted(ROOT.glob('serving-*/manifest.json')):
++        if path.parent.name.startswith('serving-audit'):
++            continue
++        d = json.loads(path.read_text())
++        manifests.append(dict(path=str(path),normal_exit=d['normal_exit'],error=d.get('error'),
++            trials=len(d['trials']),checks=d['checks']))
++        by_cell = defaultdict(dict)
++        for t in d['trials']:
++            by_cell[t['family'],t['c'],t['repeat']][t['mode']] = t
++        for (family,c,repeat), pair in by_cell.items():
++            if len(pair)!=2:
++                continue
++            a,b = pair['serial'],pair['batch']
++            ratio = a['summary']['duration_s']/b['summary']['duration_s']
++            aggregate[path.parent.name,c].append(ratio)
++            row = dict(process=path.parent.name,family=family,c=c,repeat=repeat,speedup=ratio)
++            for mode,t in pair.items():
++                batches = [v for s in t['steps'] for v in s.get('draft_batches',[])]
++                forwards = [n for v in batches for n in v['forward_batch_sizes']]
++                row[mode] = dict(summary=t['summary'],rank_memory=t['rank_memory'],
++                    batched_draft_forwards=sum(v['batched_draft_forwards'] for v in batches),
++                    feedback_forward_batch_sizes=dict(Counter(forwards)),
++                    effective_feedback_batch_size=statistics.mean(forwards) if forwards else None,
++                    serial_request_calls=sum(s.get('serial_fallback_count',0) for s in t['steps']),
++                    draft_runtime_ns={k:sum(v.get(k,0) for v in batches) for k in
++                        ('generation_ns','conditioning_ns','packing_ns','mask_position_ns',
++                         'model_submit_ns','head_read_ns','gather_ns','publish_ns')},
++                    max_scratch_bytes=max((v['scratch_bytes'] for v in batches),default=0))
++            cells_out.append(row)
++    baseline=json.loads((ROOT/'baseline.json').read_text())
++    changed=[p for p,h in baseline['hashes'].items() if not Path(p).exists() or
++             hashlib.sha256(Path(p).read_bytes()).hexdigest()!=h]
++    correctness = {p.parent.name:json.loads(p.read_text()) for p in ROOT.glob('correctness*/manifest.json')}
++    edges = json.loads((ROOT/'edges/summary.json').read_text()) if (ROOT/'edges/summary.json').exists() else None
++    summary = dict(phase='5.3',raw_root=str(ROOT),isolated=groups,profiles=profiles,
++        isolated_correctness=[r['correctness'] for r in isolated['groups']],fp32=isolated.get('fp32_controls'),
++        isolated_fixed_shape_deterministic=all(len({json.dumps(t['tokens']) for t in r['trials']
++            if t['mode']==m})==1 for r in isolated['groups'] for m in ('serial','batch')),
++        serving_manifests=manifests,serving_pairs=cells_out,
++        serving_aggregate=[dict(process=p,c=c,pairs=len(v),speedup_geomean=geomean(v),
++                                improving_pairs=sum(x>1 for x in v)) for (p,c),v in aggregate.items()],
++        correctness=[dict(process=k,normal_exit=v['normal_exit'],error=v.get('error'),checks=v['checks'])
++                     for k,v in correctness.items()],edges=edges,baseline_changed=changed,
++        default_changed=False,mlp_replay=False,git_commit_created=False)
++    OUT.mkdir(exist_ok=True)
++    (OUT/'summary.json').write_text(json.dumps(summary,indent=2))
++    print(json.dumps(dict(isolated=groups,serving=summary['serving_aggregate'],
++                         manifests=manifests,changed=changed),indent=2))
++
++
++if __name__=='__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_disagreement.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_disagreement.py
+@@ -0,0 +1,72 @@
++"""Out-of-window same-state oracle for a newly observed serving proposal change."""
++import argparse
++import copy
++import json
++
++import torch
++
++import benchmarks.serving.eagle3_phase42 as base
++from benchmarks.serving.eagle3_phase53 import ROOT, tree
++from benchmarks.serving.eagle3_phase53_serving import ServingRunner, Collector, requests
++from nanovllm.speculative.draft_state import DraftState
++from nanovllm.speculative.draft_batch import DraftBatchExecutor
++import nanovllm.speculative.concurrent_engine as engine_module
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument('--name',default='disagreement')
++    parser.add_argument('--manifest')
++    args = parser.parse_args()
++    out = ROOT/args.name
++    out.mkdir(exist_ok=False)
++    engine_module.ConcurrentModelRunner = ServingRunner
++    base.TimingCollector = Collector
++    engine = engine_module.ConcurrentLLMEngine(base.TARGET,draft_path=base.DRAFT,reference_path=base.REFERENCE,
++        tensor_parallel_size=2,enforce_eager=True,max_model_len=2048,max_num_batched_tokens=2048,
++        max_num_seqs=4,gpu_memory_utilization=.7,scheduler_policy='original',audit=True)
++    engine.phase53_audit = True
++    executor = DraftBatchExecutor()
++    engine.speculative_coordinator.draft_batch_executor = executor
++    original = executor.propose
++    frozen = DraftState.propose
++    mismatches, calls, results = [], [], []
++    current = {}
++    def propose(items):
++        clones = [copy.copy(i.state) for i in items]
++        expected = [frozen(s,i.features,i.tokens,i.k,owner=i.request.seq_id) for s,i in zip(clones,items)]
++        # Recover pre-call state metadata from the immutable source inputs.
++        before = [(i.state.cursor,i.state.conditioned_tokens,i.state.past) for i in items]
++        actual = original(items)
++        call = dict(index=len(calls),expected=expected,actual=actual,
++                    lengths=[i.features.shape[0] for i in items],equal=expected==actual,cell=dict(current))
++        calls.append(call)
++        if expected != actual:
++            samples = [dict(features=i.features.detach().cpu().clone(),tokens=i.tokens,k=i.k,
++                cursor=old[0],conditioned_tokens=old[1],past=tree(old[2],lambda t:t.cpu().clone()),
++                generation=i.generation,seq_id=i.request.seq_id) for i,old in zip(items,before)]
++            path = out/f'call{call["index"]}.pt'
++            torch.save(samples,path)
++            mismatches.append(dict(**call,path=str(path)))
++        return actual
++    executor.propose = propose
++    try:
++        cells = ([r for r in json.loads(open(args.manifest).read())['checks'] if not r['exact_signature']]
++                 if args.manifest else [dict(family='short-short',c=2,repeat=0)])
++        for cell in cells:
++            current.clear()
++            current.update({k:cell[k] for k in ('family','c','repeat')})
++            result = base.run_closed_loop(engine,'speculative',requests(engine,**dict(
++                family=cell['family'],c=cell['c'],repeat=cell['repeat'])),cell['c'])
++            results.append(dict(cell=dict(current),result=result))
++            data = dict(calls=calls,mismatches=mismatches,results=results,
++                        ranks=engine.model_runner.call('phase53_control','snapshot'))
++            (out/'manifest.json').write_text(json.dumps(data,indent=2))
++            print('AUDIT_CELL',current,'mismatches',len(mismatches),flush=True)
++    finally:
++        engine.exit()
++    print('DISAGREEMENTS',len(mismatches),flush=True)
++
++
++if __name__=='__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_edges.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_edges.py
+@@ -0,0 +1,78 @@
++"""GPU termination and failure-path regression for the optional draft executor."""
++from dataclasses import asdict
++import json
++
++from nanovllm import SamplingParams
++from nanovllm.speculative.draft_batch import DraftBatchExecutor
++import nanovllm.speculative.concurrent_engine as engine_module
++from benchmarks.serving.eagle3_phase53_serving import ServingRunner
++from benchmarks.serving.eagle3_phase53 import ROOT, TARGET, DRAFT, REFERENCE
++from benchmarks.serving.eagle3_phase42 import cleanup_state
++
++
++def main():
++    out = ROOT/'edges'
++    out.mkdir(exist_ok=False)
++    engine_module.ConcurrentModelRunner = ServingRunner
++    engine = engine_module.ConcurrentLLMEngine(TARGET,draft_path=DRAFT,reference_path=REFERENCE,
++        tensor_parallel_size=2,enforce_eager=True,max_model_len=2048,max_num_batched_tokens=2048,
++        max_num_seqs=4,gpu_memory_utilization=.7,scheduler_policy='original',audit=True)
++    data = dict(limits=[],normal_exit=False)
++    executor = DraftBatchExecutor()
++    stream = engine.tokenizer.encode('A scientist describes recorded observations. '*400,add_special_tokens=False)
++    def generate(mode, limit):
++        engine.speculative_coordinator.draft_batch_executor = executor if mode=='batch' else None
++        seqs, commits = [], []
++        for i,n in enumerate((255,256,257,1025)):
++            engine.add_request(([2500+i]+stream)[:n], SamplingParams(temperature=1e-9,max_tokens=limit,ignore_eos=False))
++            seqs.append(engine.scheduler.waiting[-1])
++        while not engine.is_finished():
++            engine.step()
++            last = engine.speculative_coordinator.last_step
++            if last['kind'] == 'decode':
++                commits.append([{k:v for k,v in asdict(c).items() if k!='seq_id'} for c in last['entries']])
++        clean = cleanup_state(engine,'speculative')
++        ranks = engine.model_runner.call('phase53_control','snapshot')
++        assert not any(clean.values()) and not any(r['targets'] for r in ranks)
++        return dict(outputs=[s.completion_token_ids for s in seqs],commits=commits,cleanup=clean)
++    try:
++        for limit in (1,2,3,4,5,9):
++            a,b = generate('serial',limit),generate('batch',limit)
++            data['limits'].append(dict(limit=limit,serial=a,batch=b,exact=a==b))
++            assert a==b
++        probe = generate('serial',9)
++        original_eos = engine.model_runner.config.eos
++        engine.model_runner.config.eos = probe['outputs'][0][2]
++        try:
++            a,b = generate('serial',16),generate('batch',16)
++            data['eos'] = dict(serial=a,batch=b,exact=a==b,injected_eos=engine.model_runner.config.eos)
++            assert a==b and len(a['outputs'][0])<16
++        finally:
++            engine.model_runner.config.eos = original_eos
++        engine.speculative_coordinator.draft_batch_executor = executor
++        for i in range(2):
++            engine.add_request(([3500+i]+stream)[:255],SamplingParams(temperature=1e-9,max_tokens=12))
++        while engine.scheduler.waiting:
++            engine.step()
++        def fail(*args):
++            raise RuntimeError('Phase53 intentional batched-draft exception')
++        executor.observer = fail
++        try:
++            engine.step()
++            raise AssertionError('Expected injected exception')
++        except RuntimeError as error:
++            if 'Phase53 intentional' not in str(error):
++                raise
++        clean = cleanup_state(engine,'speculative')
++        ranks = engine.model_runner.call('phase53_control','snapshot')
++        assert not any(clean.values()) and not any(r['targets'] for r in ranks)
++        data['exception'] = dict(cleanup=clean,ranks=ranks,faulted=engine._faulted)
++        data['normal_exit'] = True
++    finally:
++        engine.exit()
++        (out/'summary.json').write_text(json.dumps(data,indent=2))
++    print('EDGES_COMPLETE',flush=True)
++
++
++if __name__=='__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_finalize.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_finalize.py
+@@ -0,0 +1,152 @@
++"""Freeze Phase5.3 evidence and verify protected files; never commits Git."""
++import difflib
++from collections import Counter
++import hashlib
++import importlib.metadata
++import json
++from pathlib import Path
++import re
++import subprocess
++import sys
++import tarfile
++
++from benchmarks.serving.eagle3_phase53 import ROOT, TARGET
++from benchmarks.serving.eagle3_phase53_analysis import OUT
++from benchmarks.serving.eagle3_phase53_serving import signature, acceptance_check
++
++
++def main():
++    summary = json.loads((OUT/'summary.json').read_text())
++    baseline = json.loads((ROOT/'baseline.json').read_text())
++    allowed = {'nanovllm/speculative/coordinator.py','nanovllm/speculative/concurrent_engine.py'}
++    unexpected = [p for p,h in baseline['hashes'].items()
++        if 'phase5_3' not in p and (not Path(p).exists() or hashlib.sha256(Path(p).read_bytes()).hexdigest()!=h)
++        and p not in allowed]
++    if unexpected:
++        raise RuntimeError(f'Protected source changed: {unexpected}')
++    test = subprocess.run([sys.executable,'-m','unittest','discover','-s','tests','-q'],text=True,capture_output=True)
++    (ROOT/'post-cpu-tests.log').write_text(test.stdout+test.stderr)
++    if test.returncode:
++        raise RuntimeError(test.stderr)
++    count = int(re.search(r'Ran (\d+) tests',test.stderr)[1])
++    sources = sorted([Path(p) for p in allowed]+[Path('nanovllm/speculative/draft_batch.py')]+
++        list(Path('tests').glob('test_eagle3_draft_batch.py'))+list(Path('tests').glob('test_eagle3_phase53*.py'))+
++        list(Path('benchmarks/serving').glob('eagle3_phase53*.py'))+[Path('docs/EAGLE3_PHASE5_3.md')])
++    diff = []
++    with tarfile.open(ROOT/'baseline-source.tar.gz','r:gz') as archive:
++        for p in sources:
++            try:
++                old = archive.extractfile(str(p)).read().decode()
++            except KeyError:
++                old = ''
++            diff.extend(difflib.unified_diff(old.splitlines(True),p.read_text().splitlines(True),
++                        fromfile=f'baseline/{p}',tofile=f'phase5.3/{p}'))
++    (OUT/'phase5.3-only.diff').write_text(''.join(diff))
++    with tarfile.open(ROOT/'phase53-source-final.tar.gz','w:gz') as archive:
++        for p in sources:
++            archive.add(p)
++        archive.add(OUT/'workload-plan.json')
++    main_run = json.loads((ROOT/'serving-main-r3/manifest.json').read_text())
++    fresh = json.loads((ROOT/'serving-fresh-r3/manifest.json').read_text())
++    index = {(r['family'],r['c'],r['repeat'],r['mode']):r for r in main_run['trials']}
++    cross = []
++    for r in fresh['trials']:
++        key = r['family'],r['c'],r['repeat'],r['mode']
++        a,b = signature(index[key]),signature(r)
++        cross.append(dict(family=key[0],c=key[1],repeat=key[2],mode=key[3],
++                          outputs_equal=a['outputs']==b['outputs'],full_signature_equal=a==b))
++    diagnostics = {}
++    for name in ('serving-audit','serving-audit-numerics'):
++        p = ROOT/name/('manifest.json' if name=='serving-audit' else 'summary.json')
++        if not p.exists():
++            diagnostics[name] = dict(complete=False)
++            continue
++        data = json.loads(p.read_text())
++        if name=='serving-audit':
++            expected = [r for r in main_run['checks'] if not r['exact_signature']]
++            eos = json.loads((Path(TARGET)/'config.json').read_text())['eos_token_id']
++            replay_checks = []
++            for row in data['results']:
++                cell, result = row['cell'], row['result']
++                reference = index[cell['family'],cell['c'],cell['repeat'],'batch']
++                replay_checks.append(dict(**cell,
++                    outputs_equal=signature(reference)['outputs']==signature(result)['outputs'],
++                    acceptance_semantics=acceptance_check(result,eos)))
++            diagnostics[name] = dict(complete=len(data['results'])==len(expected),
++                expected_cells=len(expected),replayed_cells=len(data['results']),
++                checked_groups=len(data['calls']),local_disagreements=len(data['mismatches']),
++                cleanup_zero=all(not any(r['result']['summary']['cleanup'].values()) for r in data['results']),
++                cells_with_local_disagreement=len({json.dumps(r['cell'],sort_keys=True) for r in data['mismatches']}),
++                replay_checks=replay_checks,
++                raw_manifest=str(p))
++        else:
++            hp = [r for r in data if r['dtype']=='torch.float32']
++            bf = [r for r in data if r['dtype']=='torch.bfloat16']
++            expected = len(list((ROOT/'serving-audit').glob('*.pt')))
++            diagnostics[name] = dict(complete=len(hp)==len(bf)==expected,expected_groups=expected,
++                bf16_groups=len(bf),fp32_groups=len(hp),
++                fp32_proposals_equal=sum(r['comparison']['proposals_equal'] for r in hp),
++                bf16_proposals_equal=sum(r['comparison']['proposals_equal'] for r in bf),
++                finite=all(v['finite'] for r in data for row in r['comparison']['rows']
++                           for v in [row['hidden'],row['logits'],*row['kv']]),
++                teacher_forced={dtype:dict(
++                    padding_nonzero_groups=sum(any(op['native_vs_padded']['max_abs']>0
++                        for op in r['diagnostic']['operators']) for r in rows),
++                    first_observed_batch_operator=dict(Counter(next((op['operator']
++                        for op in r['diagnostic']['operators'] if op['padded_vs_batch']['max_abs']>0),
++                        'none') for r in rows)),
++                    padding_max_abs=max(op['native_vs_padded']['max_abs'] for r in rows
++                                        for op in r['diagnostic']['operators']),
++                    batch_max_abs=max(op['padded_vs_batch']['max_abs'] for r in rows
++                                      for op in r['diagnostic']['operators']),
++                    finite=all(op[path]['finite'] for r in rows for op in r['diagnostic']['operators']
++                               for path in ('native_vs_padded','padded_vs_batch')))
++                    for dtype,rows in (('bf16',bf),('fp32',hp))},
++                raw_summary=str(p))
++    summary.update(validation=dict(cpu_tests=count,cpu_passed=True,protected_unexpected_changes=unexpected,
++        historical_tests_unchanged=True,git_commit_created=False),
++        source_hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
++        workload_plan_sha256=hashlib.sha256((OUT/'workload-plan.json').read_bytes()).hexdigest(),
++        cross_process_checks=cross,numerical_diagnostics=diagnostics,
++        software={n:importlib.metadata.version(n) for n in ('torch','transformers','triton','flash-attn')})
++    summary['decision'] = dict(status='Keep Experimental',default_draft_batching=False,
++        numerical_contract='Strict state and actual greedy acceptance; no universal BF16 cross-shape proposal parity',
++        qualification_limits=['Unresolved cross-process proposal-trajectory variation, including serial baseline',
++                              'Main c1 family-level latency regressions retained',
++                              'Target verification wall reduction not causally isolated'],
++        correctness_state_tests_passed=True,universal_proposal_parity=False,
++        adoption_all_gates_passed=False,secondary_implemented=False)
++    summary['measurement_notes'] = dict(
++        serving_warmup='One short-output run per system/cell; not exhaustive shape warmup',
++        isolated_warmup='Two generation calls per system/cell',
++        throughput='Committed output tokens divided by measurement wall time',
++        headline_speedup='Geometric mean of paired serial wall / batch wall',
++        itl='Committed burst timestamps; intra-burst gaps can be zero',
++        timing_decomposition='Host submission spans overlap device execution; not GPU service times',
++        incomplete_runs='Retained separately, not pooled into completed five-repeat cells',
++        c1_tail_check='Post-hoc targeted diagnostic; original negative observations retained')
++    (OUT/'summary.json').write_text(json.dumps(summary,indent=2))
++    (OUT/'commands.md').write_text('# Executed Commands\n\nWorking directory: `/root/autodl-tmp/projects/nano-vllm`.\nRaw root: `'+str(ROOT)+'`. Never overwrite a run directory.\n\n'+
++        '\n\n'.join('```text\n'+' '.join(json.loads(p.read_text())['command'])+'\n```'
++                    for p in sorted(ROOT.glob('*/manifest.json')) if 'command' in json.loads(p.read_text()))+
++        '\n\n## Additional Diagnostics and Reporting\n\n'+
++        'GPU commands used HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false '+
++        'NCCL_DEBUG=WARN TORCH_DISABLE_ADDR2LINE=1. Full source/environment hashes are in manifests.\n\n'+
++        '\n\n'.join('```text\n'+sys.executable+' -m '+command+'\n```' for command in (
++            'benchmarks.serving.eagle3_phase53_numerics',
++            'benchmarks.serving.eagle3_phase53_edges',
++            'benchmarks.serving.eagle3_phase53_disagreement',
++            'benchmarks.serving.eagle3_phase53_numerics --disagreement',
++            'benchmarks.serving.eagle3_phase53_disagreement --name serving-audit --manifest '+str(ROOT/'serving-main-r3/manifest.json'),
++            'benchmarks.serving.eagle3_phase53_numerics --disagreement --input-name serving-audit --output-name serving-audit-numerics',
++            'benchmarks.serving.eagle3_phase53_analysis',
++            'benchmarks.serving.eagle3_phase53_tables',
++            'benchmarks.serving.eagle3_phase53_finalize',
++            'unittest discover -s tests -q'))+'\n')
++    print(json.dumps(dict(validation=summary['validation'],diagnostics=diagnostics,
++                         cross_process_output_equal=all(r['outputs_equal'] for r in cross),
++                         cross_process_signature_changes=sum(not r['full_signature_equal'] for r in cross)),indent=2))
++
++
++if __name__=='__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_numerics.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_numerics.py
+@@ -0,0 +1,109 @@
++"""Teacher-forced draft shape audit; no production changes or tolerance gate."""
++import argparse
++import json
++from pathlib import Path
++
++import torch
++import torch.nn.functional as F
++from transformers import AutoConfig
++
++from benchmarks.serving.eagle3_phase53 import (
++    ROOT, TARGET, DRAFT, REFERENCE, make_items, serial_generation, stats, compare)
++from nanovllm.speculative.draft import ReferenceDraft
++from nanovllm.speculative.draft_batch import DraftBatchExecutor
++
++
++@torch.inference_mode()
++def audit(prepared):
++    model = prepared[0].item.state.draft.model
++    device = prepared[0].hidden.device
++    forced, _ = serial_generation(prepared)
++    b, width = len(prepared), max(p.end for p in prepared)
++    traces, context = {}, {}
++    handles = []
++    for name, module in model.named_modules():
++        if not name or 'rotary' in name or name.endswith('embed_tokens'):
++            continue
++        def hook(module, args, output, name=name):
++            out = output[0] if isinstance(output, tuple) else output
++            if not isinstance(out, torch.Tensor) or out.ndim < 2:
++                return
++            rows = context['rows']
++            if out.shape[0] != len(rows):
++                return
++            for r,owner in enumerate(rows):
++                key = (context['path'], owner, context['step'], name)
++                traces[key] = out[r:r+1].detach().clone()
++        handles.append(module.register_forward_hook(hook))
++    try:
++        for path in ('native', 'padded', 'batch'):
++            groups = [list(range(b))] if path == 'batch' else [[i] for i in range(b)]
++            for rows in groups:
++                local_width = prepared[rows[0]].end if path == 'native' else width
++                hidden = torch.cat([prepared[r].hidden for r in rows])
++                past = tuple(tuple(torch.cat([F.pad(prepared[r].confirmed[l][v],
++                    (0,0,0,local_width-prepared[r].end)) for r in rows]) for v in range(2))
++                    for l in range(len(prepared[0].confirmed)))
++                lengths = torch.tensor([prepared[r].end for r in rows], device=device)
++                mask = torch.arange(local_width,device=device)[None,:] < lengths[:,None]
++                for step in range(max(prepared[r].item.k for r in rows)):
++                    context.update(path=path,rows=rows,step=step)
++                    model.lm_head(model.norm(hidden))
++                    keep = [j for j,r in enumerate(rows) if step+1 < prepared[r].item.k]
++                    if not keep:
++                        break
++                    if len(keep) != len(rows):
++                        selection = torch.tensor(keep,device=device,dtype=torch.long)
++                        rows = [rows[j] for j in keep]
++                        hidden = hidden.index_select(0,selection)
++                        past = tuple(tuple(t.index_select(0,selection) for t in layer) for layer in past)
++                        mask = mask.index_select(0,selection)
++                        lengths = lengths.index_select(0,selection)
++                        context['rows'] = rows
++                    mask = torch.cat((mask,torch.ones((len(rows),1),dtype=torch.bool,device=device)),1)
++                    ids = torch.tensor([[forced[r][step]] for r in rows],device=device)
++                    hidden,past = model(hidden,input_ids=ids,past_key_values=past,
++                        attention_mask=mask,position_ids=(lengths+step)[:,None],use_cache=True)
++        result = []
++        for key,value in traces.items():
++            path,row,step,name = key
++            if path != 'native':
++                continue
++            p = traces['padded',row,step,name]
++            q = traces['batch',row,step,name]
++            result.append(dict(row=row,step=step,operator=name,native_vs_padded=stats(value,p),
++                padded_vs_batch=stats(p,q),native_vs_batch=stats(value,q)))
++        return dict(forced_proposals=forced,operators=result)
++    finally:
++        for handle in handles:
++            handle.remove()
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument('--disagreement', action='store_true')
++    parser.add_argument('--input-name',default='disagreement')
++    parser.add_argument('--output-name')
++    args = parser.parse_args()
++    out = ROOT/(args.output_name or ('disagreement-numerics' if args.disagreement else 'numerics'))
++    out.mkdir(exist_ok=False)
++    torch.set_num_threads(4)
++    torch.backends.cuda.matmul.allow_tf32 = False
++    draft = ReferenceDraft(DRAFT,REFERENCE,TARGET,AutoConfig.from_pretrained(TARGET),torch.device('cuda:0'))
++    data = []
++    for dtype in (torch.bfloat16,torch.float32):
++        draft.model.to(dtype=dtype)
++        paths = sorted((ROOT/args.input_name).glob('*.pt')) if args.disagreement else [ROOT/f'capture/group{g}.pt' for g in range(3)]
++        for group,path in enumerate(paths):
++            raw = torch.load(path,weights_only=True)
++            samples = raw if args.disagreement else raw[0]
++            prepared = DraftBatchExecutor().prepare(make_items(samples,draft,dtype))
++            data.append(dict(dtype=str(dtype),group=group,path=str(path),diagnostic=audit(prepared),
++                             comparison=compare(prepared,DraftBatchExecutor())))
++            del prepared
++            (out/'summary.json').write_text(json.dumps(data,indent=2))
++    print('NUMERICS_COMPLETE',flush=True)
++
++
++if __name__ == '__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_serving.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_serving.py
+@@ -0,0 +1,224 @@
++"""Phase5.3 additive serving collector; frozen target and scheduler algorithms."""
++import argparse
++from dataclasses import asdict
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++from time import perf_counter_ns
++import traceback
++
++import torch
++import torch.distributed as dist
++
++import benchmarks.serving.eagle3_phase42 as base
++from benchmarks.serving.eagle3_phase51 import heldout
++from benchmarks.serving.eagle3_phase53 import ROOT, GROUPS
++import nanovllm.speculative.concurrent_engine as engine_module
++from nanovllm.speculative.draft_batch import DraftBatchExecutor
++from nanovllm.speculative.acceptance import accept_greedy
++
++
++def digest(tensor):
++    return hashlib.sha256(tensor.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()).hexdigest()
++
++
++class ServingRunner(engine_module.ConcurrentModelRunner):
++    def phase53_control(self, operation):
++        if operation == 'reset':
++            torch.cuda.synchronize()
++            torch.cuda.reset_peak_memory_stats()
++        row = dict(rank=self.rank, targets=len(getattr(self, '_eagle_batch_states', {})),
++            allocated=torch.cuda.memory_allocated(), reserved=torch.cuda.memory_reserved(),
++            peak_allocated=torch.cuda.max_memory_allocated(), peak_reserved=torch.cuda.max_memory_reserved(),
++            free=torch.cuda.mem_get_info()[0], kv_blocks=self.config.num_kvcache_blocks)
++        if operation == 'audit':
++            row['states'] = []
++            for state in getattr(self, '_eagle_batch_states', {}).values():
++                positions = torch.arange(state['cursor'], device=self.kv_cache.device)
++                blocks = torch.tensor(state['blocks'], device=positions.device, dtype=torch.long)
++                kv = self.kv_cache[:, :, blocks[positions//self.block_size], positions%self.block_size]
++                row['states'].append(dict(cursor=state['cursor'], tokens=state['tokens'],
++                    kv=digest(kv), features=digest(state['features']), tentative=state['tentative'] is not None))
++        ranks = [None]*self.world_size
++        dist.all_gather_object(ranks, row)
++        return ranks if self.rank == 0 else None
++
++
++class Collector(base.TimingCollector):
++    def _install(self):
++        super()._install()
++        coordinator = self.engine.speculative_coordinator
++        executor = getattr(coordinator, 'draft_batch_executor', None)
++        if executor:
++            original = self._replace(executor, 'propose', None)
++            def propose(items, _original=original):
++                start = perf_counter_ns()
++                result = _original(items)
++                self._add('draft_ns', perf_counter_ns()-start)
++                m = dict(executor.last_metrics)
++                self._add('draft_catchup_ns', m['conditioning_ns'])
++                self._add('draft_forward_count', m['draft_forwards'])
++                self._add('draft_tokens_processed', sum(i.state.last_metrics['draft_tokens_processed'] for i in items))
++                self.current.setdefault('draft_batches', []).append(m)
++                return result
++            executor.propose = propose
++        if getattr(self.engine, 'phase53_audit', False):
++            original = self._replace(self.runner, 'call', None)
++            def call(method, *args, _original=original):
++                result = _original(method, *args)
++                if method == 'eagle3_batch' and args[0] == 'commit':
++                    ranks = _original('phase53_control', 'audit')
++                    drafts = []
++                    for state in coordinator.drafts.values():
++                        drafts.append(dict(cursor=state.cursor, tokens=state.conditioned_tokens,
++                            kv=[digest(t) for layer in (state.past or ()) for t in layer]))
++                    self.current['state_audit'] = dict(target=[r['states'] for r in ranks], draft=drafts)
++                return result
++            self.runner.call = call
++
++    def finish_step(self, start, end):
++        last = self.engine.speculative_coordinator.last_step
++        if last.get('kind') == 'decode':
++            self.current['commits'] = [{k:v for k,v in asdict(c).items() if k not in ('seq_id',)}
++                                      for c in last['entries']]
++            self.current['serial_fallback_count'] = (0 if self.current.get('draft_batches') else
++                                                     sum(c.actual_k > 0 for c in last['entries']))
++        return super().finish_step(start, end)
++
++
++def requests(engine, family, c, repeat, warmup=False):
++    if family in base.WORKLOADS:
++        return base.build_requests(engine.tokenizer, family, c, repeat, warmup)
++    if family == 'heldout-mixed':
++        rows = heldout(engine.tokenizer, c, repeat)
++    elif family.startswith('boundary-'):
++        lengths = GROUPS[int(family.split('-')[-1])]
++        stream = engine.tokenizer.encode('A scientist describes recorded observations. '*400, add_special_tokens=False)
++        rows = [base.Request(i, ([2100+i]+stream)[:n], (9,13,17,7)[i]) for i,n in enumerate(lengths)]
++    else:
++        plan = json.loads(Path('benchmarks/eagle3-phase5_3/workload-plan.json').read_text())
++        cell = next(r for r in plan['new_families'] if r['name'] == family)
++        rows = []
++        for i in range(max(4,2*c)):
++            length = cell['contexts'][i%2]
++            tail = engine.tokenizer.encode('\nTask: '+cell['prompt']+'\nAnswer:', add_special_tokens=False)
++            filler = engine.tokenizer.encode('Reference record: the instrument is checked before use. '*300, add_special_tokens=False)
++            prompt = [12000+repeat*19+i]+filler[:length-len(tail)-1]+tail
++            assert len(prompt) == length
++            rows.append(base.Request(i,prompt,cell['output_limits'][i%2]))
++    if warmup:
++        for r in rows:
++            r.output_limit = min(r.output_limit, 6)
++    return rows
++
++
++def signature(run):
++    return dict(outputs=[r['output_token_ids'] for r in run['requests']],
++        commits=[s.get('commits') for s in run['steps'] if not s['is_prefill']],
++        states=[s['state_audit'] for s in run['steps'] if 'state_audit' in s])
++
++
++def acceptance_check(run, eos):
++    limits = {r['sequence_id']:r['output_limit'] for r in run['requests']}
++    emitted = {seq_id:1 for seq_id in limits}
++    for step in run['steps']:
++        for seq_id,entry in zip(step['selected_sequence_ids'],step.get('commits',[])):
++            expected = accept_greedy(entry['proposed_token_ids'],entry['target_token_ids'],
++                                    limits[seq_id]-emitted[seq_id],eos)
++            assert expected.accepted == entry['accepted_length']
++            assert expected.tokens == list(entry['committed_token_ids'])
++            assert expected.fallback == entry['fallback_token'] and expected.finished == entry['finished']
++            assert entry['new_cursor'] == entry['old_cursor']+1+expected.accepted
++            emitted[seq_id] += len(expected.tokens)
++    return True
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument('--stage', choices=('correctness', 'serving'), required=True)
++    parser.add_argument('--name', required=True)
++    parser.add_argument('--repeats', type=int, default=5)
++    parser.add_argument('--families', nargs='+')
++    parser.add_argument('--concurrencies', nargs='+', type=int, default=[1,2,4])
++    parser.add_argument('--reverse', action='store_true')
++    parser.add_argument('--record-draft-variation', action='store_true',
++                        help='Keep proposal differences as pending diagnostics; output mismatch still stops')
++    args = parser.parse_args()
++    out = ROOT/args.name
++    out.mkdir(exist_ok=False)
++    base.TimingCollector = Collector
++    engine_module.ConcurrentModelRunner = ServingRunner
++    config = dict(tensor_parallel_size=2, enforce_eager=True, max_model_len=2048,
++        max_num_batched_tokens=2048, max_num_seqs=4, gpu_memory_utilization=.7,
++        scheduler_policy='original')
++    data = dict(command=[sys.executable,*sys.argv], environment={k:os.environ.get(k) for k in
++        ('HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','TOKENIZERS_PARALLELISM','NCCL_DEBUG','TORCH_DISABLE_ADDR2LINE')},
++        config=config, gpu=subprocess.check_output(['nvidia-smi'], text=True),
++        topology=subprocess.check_output(['nvidia-smi','topo','-m'], text=True),
++        versions=dict(torch=torch.__version__,cuda=torch.version.cuda),
++        source_hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
++            for folder in ('nanovllm','benchmarks/serving','tests') for p in Path(folder).rglob('*.py')},
++        target=base.TARGET, draft=base.DRAFT, reference=base.REFERENCE,
++        target_revision='40c069824f4251a91eefaf281ebe4c544efd3e18',
++        draft_revision='3d13517724e81cb409ddf1d4650772ec52f1e18e',
++        git=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
++        warmups=[], trials=[], checks=[], normal_exit=False)
++    def save():
++        (out/'manifest.json').write_text(json.dumps(data, indent=2))
++    save()
++    engine = None
++    try:
++        engine = engine_module.ConcurrentLLMEngine(base.TARGET, draft_path=base.DRAFT,
++            reference_path=base.REFERENCE, audit=args.stage=='correctness', **config)
++        engine.phase53_audit = args.stage == 'correctness'
++        coordinator = engine.speculative_coordinator
++        executor = DraftBatchExecutor()
++        cells = ([(f'boundary-{i}',len(lengths)) for i,lengths in enumerate(GROUPS)]
++                 if args.stage=='correctness' else
++                 [(f,c) for f in (args.families or [*base.WORKLOADS,'heldout-mixed',
++                    'copy-pattern','observatory-prose','routing-table']) for c in args.concurrencies])
++        for index,(family,c) in enumerate(cells):
++            repeats = 1 if args.stage == 'correctness' else args.repeats
++            for mode in ('serial','batch'):
++                coordinator.draft_batch_executor = executor if mode=='batch' else None
++                warm = base.run_closed_loop(engine,'speculative',requests(engine,family,c,100,True),c)
++                data['warmups'].append(dict(family=family,c=c,mode=mode,result=warm))
++            for repeat in range(repeats):
++                pair = []
++                order = ('serial','batch') if (index+repeat+int(args.reverse))%2 == 0 else ('batch','serial')
++                for mode in order:
++                    coordinator.draft_batch_executor = executor if mode=='batch' else None
++                    engine.model_runner.call('phase53_control','reset')
++                    result = base.run_closed_loop(engine,'speculative',requests(engine,family,c,repeat),c)
++                    result.update(family=family,c=c,mode=mode,repeat=repeat,
++                        rank_memory=engine.model_runner.call('phase53_control','snapshot'))
++                    data['trials'].append(result)
++                    pair.append(result)
++                    save()
++                    print('TRIAL',family,c,repeat,mode,result['summary']['duration_s'],flush=True)
++                equal = signature(pair[0]) == signature(pair[1])
++                outputs_equal = signature(pair[0])['outputs'] == signature(pair[1])['outputs']
++                semantics = all(acceptance_check(r,engine.model_runner.config.eos) for r in pair)
++                data['checks'].append(dict(family=family,c=c,repeat=repeat,exact_signature=equal,
++                    outputs_equal=outputs_equal,acceptance_semantics=semantics,
++                    proposal_diagnostics_pending=not equal))
++                save()
++                if not outputs_equal or (not equal and not args.record_draft_variation):
++                    raise RuntimeError('New serial/batch disagreement: retain both trials and diagnose before proceeding')
++                if any(any(r['summary']['cleanup'].values()) or any(m['targets'] for m in r['rank_memory']) for r in pair):
++                    raise RuntimeError('Serving state leak')
++        data['normal_exit'] = True
++    except Exception:
++        data['error'] = traceback.format_exc()
++        raise
++    finally:
++        if engine is not None:
++            engine.exit()
++        save()
++
++
++if __name__ == '__main__':
++    main()
+--- baseline/benchmarks/serving/eagle3_phase53_tables.py
++++ phase5.3/benchmarks/serving/eagle3_phase53_tables.py
+@@ -0,0 +1,115 @@
++"""Derive complete Phase5.3 serving tables without discarding any measured row."""
++from collections import defaultdict
++import json
++from pathlib import Path
++import statistics
++
++from benchmarks.serving.eagle3_phase42 import distribution
++from benchmarks.serving.eagle3_phase53 import ROOT
++from benchmarks.serving.eagle3_phase53_analysis import OUT, geomean
++
++
++def table(headers, rows):
++    return '\n'.join(['| '+' | '.join(headers)+' |', '| '+' | '.join(['---']*len(headers))+' |']+
++                     ['| '+' | '.join(map(str,row))+' |' for row in rows])+'\n'
++
++
++def pooled(trials):
++    wall = sum(t['summary']['duration_s'] for t in trials)
++    requests = [r for t in trials for r in t['requests']]
++    steps = [s for t in trials for s in t['steps']]
++    batches = [b for s in steps for b in s.get('draft_batches',[])]
++    spec = {k:sum(t['summary']['speculation'][k] for t in trials) for k in
++            ('proposed_tokens','accepted_tokens','verifications','target_forwards','draft_forwards',
++             'committed_decode_tokens')}
++    metrics = {k:sum(t['summary']['wall_clock'].get(k,0) for t in trials) for k in
++               ('draft_ns','draft_catchup_ns','target_verify_ns','target_prefill_ns','schedule_ns')}
++    sizes = [n for b in batches for n in b['forward_batch_sizes']]
++    fallback_requests = sum(s.get('serial_fallback_count',0) for s in steps)
++    fallback_forwards = spec['draft_forwards']-sum(b['draft_forwards'] for b in batches)
++    fallback_feedback = fallback_forwards-fallback_requests
++    groups = len(sizes)+fallback_feedback
++    spec.update(acceptance_rate=spec['accepted_tokens']/spec['proposed_tokens'],
++        accepted_per_verification=spec['accepted_tokens']/spec['verifications'],
++        outputs_per_verification=spec['committed_decode_tokens']/spec['verifications'],
++        batched_feedback_forwards=sum(n>1 for n in sizes),serial_request_calls=fallback_requests,
++        generation_head_steps=sum(len(b['head_batch_sizes']) for b in batches)+fallback_forwards,
++        effective_feedback_batch_size=(sum(sizes)+fallback_feedback)/groups if groups else None)
++    return dict(trials=len(trials),wall_s=wall,requests=len(requests),
++        output_tokens=sum(len(r['output_token_ids']) for r in requests),
++        output_tokens_per_s=sum(len(r['output_token_ids']) for r in requests)/wall,
++        requests_per_s=len(requests)/wall,
++        latency={k:distribution(v for r in requests for v in
++            (r['itl_ms'] if k=='itl_ms' else [r[k]])) for k in ('ttft_ms','e2e_ms','tpot_ms','itl_ms')},
++        wall_ns=metrics,speculation=spec,
++        peak_allocated_by_rank=[max(t['rank_memory'][rank]['peak_allocated'] for t in trials) for rank in (0,1)],
++        peak_reserved_by_rank=[max(t['rank_memory'][rank]['peak_reserved'] for t in trials) for rank in (0,1)],
++        min_posttrial_free_by_rank=[min(t['rank_memory'][rank]['free'] for t in trials) for rank in (0,1)],
++        posttrial_allocated_range_by_rank=[
++            [min(t['rank_memory'][rank]['allocated'] for t in trials),
++             max(t['rank_memory'][rank]['allocated'] for t in trials)] for rank in (0,1)],
++        max_scratch_bytes=max((b['scratch_bytes'] for b in batches),default=0),
++        max_used_blocks=max(s['used_blocks_after'] for s in steps),
++        cleanup_zero=all(not any(t['summary']['cleanup'].values()) and
++                         not any(r['targets'] for r in t['rank_memory']) for t in trials),
++        prefix_cache_hits=sum(t['summary']['prefix_cache_hit_requests'] for t in trials))
++
++
++def main():
++    summary = json.loads((OUT/'summary.json').read_text())
++    complete = []
++    for path in sorted(ROOT.glob('serving-*/manifest.json')):
++        if path.parent.name.startswith('serving-audit'):
++            continue
++        data = json.loads(path.read_text())
++        if data['normal_exit']:
++            complete.append((path.parent.name,data))
++    pools, cells, throughput, latency, runtime = [], [], [], [], []
++    for process,data in complete:
++        grouped = defaultdict(list)
++        by_cell = defaultdict(dict)
++        for trial in data['trials']:
++            grouped[trial['c'],trial['mode']].append(trial)
++            by_cell[trial['family'],trial['c'],trial['repeat']][trial['mode']] = trial
++        per_family = defaultdict(list)
++        for (family,c,repeat),pair in by_cell.items():
++            per_family[family,c].append(pair)
++        for (family,c),pairs in per_family.items():
++            ratios=[p['serial']['summary']['duration_s']/p['batch']['summary']['duration_s'] for p in pairs]
++            p95={m:statistics.median(p[m]['summary']['latency']['itl_ms']['p95'] for p in pairs)
++                 for m in ('serial','batch')}
++            p99={m:statistics.median(p[m]['summary']['latency']['itl_ms']['p99'] for p in pairs)
++                 for m in ('serial','batch')}
++            row=dict(process=process,family=family,c=c,repeats=len(pairs),speedup=geomean(ratios),
++                improving_repeats=sum(r>1 for r in ratios),itl_p95_median=p95,itl_p99_median=p99)
++            cells.append(row)
++            throughput.append([process,family,c,len(pairs),f'{row["speedup"]:.4f}',
++                row['improving_repeats'],f'{p95["batch"]/p95["serial"]:.4f}',
++                f'{p99["batch"]/p99["serial"]:.4f}'])
++        for (c,mode),trials in grouped.items():
++            p=pooled(trials)
++            pools.append(dict(process=process,c=c,mode=mode,**p))
++            percentiles=lambda k:'/'.join(f'{p["latency"][k][q]:.3f}' for q in ('p50','p95','p99'))
++            latency.append([process,c,mode,f'{p["output_tokens_per_s"]:.3f}',f'{p["requests_per_s"]:.3f}',
++                *[percentiles(k) for k in ('ttft_ms','e2e_ms','tpot_ms','itl_ms')]])
++            w=p['wall_ns']
++            runtime.append([process,c,mode,f'{w["draft_catchup_ns"]/1e9:.3f}',
++                f'{(w["draft_ns"]-w["draft_catchup_ns"])/1e9:.3f}',
++                f'{w["target_verify_ns"]/1e9:.3f}',p['speculation']['draft_forwards'],
++                p['speculation']['batched_feedback_forwards'],f'{p["speculation"]["effective_feedback_batch_size"]:.3f}',
++                f'{p["speculation"]["acceptance_rate"]:.4f}',
++                f'{p["peak_allocated_by_rank"][0]/2**30:.3f}',f'{p["peak_reserved_by_rank"][0]/2**30:.3f}'])
++    summary.update(completed_serving_pools=pools,completed_serving_cells=cells)
++    (OUT/'summary.json').write_text(json.dumps(summary,indent=2))
++    (OUT/'throughput-table.md').write_text('# Serving Paired Results\n\nGeomean serial wall / batch wall. Tail ratios use the median of each repeat\'s percentile. All repeats included. Incomplete/error processes remain in summary.json but are not presented as completed five-repeat cells.\n\n'+table(
++        ['process','family','c','repeats','speedup','improving','P95 ITL ratio','P99 ITL ratio'],throughput))
++    (OUT/'latency-table.md').write_text('# Pooled Serving Latency\n\nAll request/token observations pooled within each process/c/mode. Latency columns are P50/P95/P99 in ms; throughput uses summed wall time, never summed request E2E. ITL timestamps refer to committed bursts, so intra-burst gaps can be zero.\n\n'+table(
++        ['process','c','mode','output tok/s','requests/s','TTFT','E2E','TPOT','ITL'],latency))
++    (OUT/'runtime-table.md').write_text('# Runtime and Memory\n\nWall columns are seconds summed over trials, not per step. Generation = total draft wall minus serial conditioning, including full serving publication/packing overhead. Allocated/reserved are rank0 peak GiB; both ranks and per-trial numbers remain in JSON.\n\n'+table(
++        ['process','c','mode','catch-up s','generation s','verify s','draft forwards','batched feedback forwards',
++         'effective feedback B','accepted/proposed','allocated GiB','reserved GiB'],runtime))
++    print(json.dumps(dict(complete_processes=[p for p,_ in complete],cells=len(cells)),indent=2))
++
++
++if __name__=='__main__':
++    main()
+--- baseline/docs/EAGLE3_PHASE5_3.md
++++ phase5.3/docs/EAGLE3_PHASE5_3.md
+@@ -0,0 +1,98 @@
++# Phase 5.3: Cross-Request Draft-Step Batching
++
++Experimental opt-in implementation. See the
++[final report](../benchmarks/eagle3-phase5_3/final-report.md) for measured adoption
++status. No default switch, checkpoint change, training, scheduler redesign,
++catch-up batching or MLP replay combination is part of this experiment.
++
++## Actual Execution Boundary
++
++The frozen Phase2 drafter uses one feature-conditioned forward, one first-token
++head, then K-1 autoregressive feedback forwards/heads. For K3 and B requests:
++
++1. Perform B independent conditioning calls using each request's confirmed KV.
++2. Stack the last hidden rows and evaluate one batched first-token head.
++3. Right-pad copies of confirmed KV into temporary batch storage. A boolean
++   mask excludes every padded column; per-row position IDs use logical length.
++4. Feed each row's preceding proposal into the next batched forward, then head.
++   Repeat for the third proposal. Tokens remain autoregressively dependent.
++5. Remove rows whose K has clipped short, preserving an explicit original-index
++   mapping. Return proposal lists in the original scheduler-selected order.
++6. Publish only independently allocated confirmed KV to each DraftState. All
++   feedback KV is discarded, even for proposals subsequently accepted by target.
++7. Existing ragged target verification, greedy acceptance and target transaction
++   commit/rollback execute unchanged.
++
++Actual code packs before the first head; the logical steps above describe the
++data dependencies, not an additional optimization. There is no persistent
++scratch pool and no scatter of feedback KV into request state.
++
++Compared with Phase5.2's sketch, the precise boundary is **three heads and two
++feedback forwards**, not three additional draft-model calls. Full model forwards
++including serial conditioning decrease B*K -> B+(K-1), while generation-only
++forwards decrease B*(K-1) -> K-1 for uniform K. Forward-count reduction alone is
++not the performance gate; timings include copies, padding, masks and token reads.
++
++## Ownership and Safety
++
++`DraftBatchInput` carries the DraftState, live request identity, captured
++generation, confirmed target features, tokens and clipped K. Check all owners
++before conditioning and again before any state publication. Duplicate states,
++foreign seq_ids, stale generations, changed prefixes and invalid extents fail.
++
++Request cursors count logical confirmed rows, never padded width. Positions for
++feedback step j are `confirmed_length+j`; the feedback row is physically appended
++after the padded width, and the mask retains the gap as invalid. Confirmed KV
++does not alias scratch. Generation exceptions publish no partial batch state;
++the existing engine exception path closes requests and releases transactions.
++
++The adapter has no persistent tensor fields. Its metrics retain numbers only.
++Only requests already selected for this iteration can form a group. Single
++eligible requests, including c1, execute the unchanged `DraftState.propose`.
++K0 rows need no draft call. The original reserve order and KV-capacity clipping
++are retained after proposal. No future arrivals are delayed for batching.
++
++## Opt-In Surface
++
++`ConcurrentLLMEngine(..., draft_batching=True)` creates the optional executor.
++Default is false. Changed existing files are limited to `concurrent_engine.py`
++and `coordinator.py`; implementation lives in new `draft_batch.py`. Frozen
++`DraftState`, Scheduler, target Attention, TP, BlockManager, sampling and target
++transaction code are unchanged. Benchmarks may toggle the same optional executor
++on an idle engine to rotate paired system order without model reload.
++
++## Numerical Contract
++
++Proposal logits may differ under BF16 batch-shape changes. They are not declared
++equivalent by an arbitrary maximum-error threshold. Diagnostics compare the
++frozen serial oracle, native-length serial, identically padded serial, batched
++execution, teacher-forced feedback and FP32 arithmetic on the same checkpoint.
++Confirmed state, ownership and positions remain strict invariants. The first new
++proposal disagreement stopped serving for diagnosis. Subsequent runs explicitly
++retain strict signature failures and mark them pending independent diagnosis;
++committed-output disagreements still stop immediately. See the correctness
++report for unresolved cross-process reproducibility limits, not a blanket BF16
++waiver.
++
++The checkpoint still does not disclose its exact target training revision.
++Phase1 historical strict serial-target parity failures are not reclassified.
++
++## Provenance
++
++- SGLang `3e7e6529002db8125967967e0aba394986eec27d`,
++  `python/sglang/srt/speculative/eagle_worker_v2.py`,
++  `EagleDraftWorker.draft_forward` / `_draft_extend_for_decode`: separate
++  conditioning from cross-request autoregressive-step batching. No subsystem
++  or KV-retention implementation was copied.
++- EAGLE reference `cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b`,
++  `eagle/model/cnets.py`, `Model.forward` / `LlamaAttention.forward`: existing
++  loaded checkpoint forward supports batch masks, explicit positions and
++  concatenated non-in-place past KV. The pinned source hashes in ReferenceDraft
++  remain enforced; no reference source edits.
++
++## Measurements
++
++Raw artifacts stay in `/root/autodl-tmp/eagle3-phase5.3-20260925/`, including the
++pre-edit dirty source archive, captured states, manifests, traces and errors.
++Captured tensors are test artifacts, not committed model data. No Git commit.
++See the phase reports for results, limitations, and the explicit stop decision.
+--- baseline/nanovllm/speculative/concurrent_engine.py
++++ phase5.3/nanovllm/speculative/concurrent_engine.py
+@@ -31,7 +31,8 @@
+     """
+ 
+     def __init__(self, model, *, draft_path, reference_path,
+-                 speculative_length=3, audit=False, target_graph_config=None, **kwargs):
++                 speculative_length=3, audit=False, target_graph_config=None,
++                 draft_batching=False, **kwargs):
+         config_fields = {field.name for field in fields(Config)}
+         config_kwargs = {key: value for key, value in kwargs.items()
+                          if key in config_fields}
+@@ -75,6 +76,9 @@
+                 fixed_k=speculative_length,
+                 audit=audit,
+             )
++            if draft_batching:
++                from nanovllm.speculative.draft_batch import DraftBatchExecutor
++                self.speculative_coordinator.draft_batch_executor = DraftBatchExecutor()
+             self.scheduler = SpeculativeSchedulerAdapter(
+                 self.scheduler, self.speculative_coordinator
+             )
+--- baseline/nanovllm/speculative/coordinator.py
++++ phase5.3/nanovllm/speculative/coordinator.py
+@@ -99,6 +99,7 @@
+                 state = self.requests[entry["seq_id"]]
+                 state.phase = SpeculativePhase.READY
+                 self.drafts[state.seq_id] = DraftState(self.draft,state.seq_id,"persistent")
++                self.drafts[state.seq_id].request_generation = state.generation
+         self.last_step = dict(kind="prefill",batch_size=len(seqs),target_query_tokens=
+                               sum(seq.num_scheduled_tokens for seq in seqs))
+         return result["target_ids"]
+@@ -128,6 +129,23 @@
+         verified = False
+         committed = False
+         try:
++            batched_proposals = {}
++            executor = getattr(self, "draft_batch_executor", None)
++            eligible = ([(seq, count) for seq, (_, count, _) in zip(seqs, counts) if count]
++                        if executor is not None and len(seqs) > 1 else [])
++            if executor is not None and len(eligible) > 1:
++                from nanovllm.speculative.draft_batch import DraftBatchInput
++                inputs = []
++                for seq, count in eligible:
++                    state = self.requests[seq.seq_id]
++                    state.require(SpeculativePhase.READY)
++                    target = self.runner._eagle_batch_states[seq.seq_id]
++                    inputs.append(DraftBatchInput(self.drafts[seq.seq_id], state,
++                        state.generation, target["features"], tuple(target["tokens"]), count))
++                start = perf_counter_ns()
++                proposed = executor.propose(inputs)
++                proposal_ns += perf_counter_ns()-start
++                batched_proposals = {seq.seq_id: tokens for (seq, _), tokens in zip(eligible, proposed)}
+             offset = 0
+             for seq,(remaining,count,reason) in zip(seqs,counts):
+                 state = self.requests[seq.seq_id]
+@@ -135,8 +153,11 @@
+                 state.phase = SpeculativePhase.PROPOSING
+                 target = self.runner._eagle_batch_states[seq.seq_id]
+                 start = perf_counter_ns()
+-                proposals = self.drafts[seq.seq_id].propose(
+-                    target["features"],target["tokens"],count,owner=seq.seq_id) if count else []
++                if seq.seq_id in batched_proposals:
++                    proposals = batched_proposals[seq.seq_id]
++                else:
++                    proposals = self.drafts[seq.seq_id].propose(
++                        target["features"],target["tokens"],count,owner=seq.seq_id) if count else []
+                 proposal_ns += perf_counter_ns()-start
+                 while not self.block_manager.can_reserve_rows(seq,state.target_cursor,1+len(proposals)):
+                     if not proposals:
+--- baseline/nanovllm/speculative/draft_batch.py
++++ phase5.3/nanovllm/speculative/draft_batch.py
+@@ -0,0 +1,172 @@
++"""Opt-in cross-request feedback execution; confirmed DraftState is never packed."""
++from dataclasses import dataclass
++from time import perf_counter_ns
++
++import torch
++import torch.nn.functional as F
++
++
++@dataclass(frozen=True)
++class DraftBatchInput:
++    state: object
++    request: object
++    generation: int
++    features: torch.Tensor
++    tokens: tuple
++    k: int
++
++    def validate(self):
++        self.state._check_owner(self.request.seq_id)
++        if (self.request.generation != self.generation or
++                getattr(self.state, "request_generation", None) != self.generation):
++            raise RuntimeError("Stale draft batch generation")
++        end = self.features.shape[0]
++        if self.state.mode != "persistent":
++            raise ValueError("Batched draft requires persistent state")
++        if not 1 <= self.k <= 3 or len(self.tokens) != end + 1 or end <= self.state.cursor:
++            raise ValueError("Invalid draft batch extent")
++        if tuple(self.tokens[1:self.state.cursor+1]) != self.state.conditioned_tokens:
++            raise RuntimeError("Committed draft conditioning changed")
++
++
++@dataclass
++class PreparedDraft:
++    item: DraftBatchInput
++    hidden: torch.Tensor
++    confirmed: tuple
++    start: int
++    end: int
++    conditioning_ns: int
++
++
++class DraftBatchExecutor:
++    """Single rank0 executor; no cross-request persistent buffers or CUDA Graphs.
++
++    Optional observer is diagnostic-only. It must not mutate tensors. Host spans
++    are nested submission timings; generation_ns includes the final token read.
++    """
++
++    def __init__(self, observer=None):
++        self.observer = observer
++        self.last_metrics = {}
++
++    @torch.inference_mode()
++    def prepare(self, items):
++        if not items or len({id(i.state) for i in items}) != len(items):
++            raise ValueError("Empty or duplicate draft owner")
++        if len({(i.request.seq_id, i.generation) for i in items}) != len(items):
++            raise ValueError("Duplicate request identity")
++        draft = items[0].state.draft
++        for item in items:
++            item.validate()
++            if item.state.draft is not draft:
++                raise ValueError("Mixed drafter instances")
++        prepared = []
++        for item in items:
++            state, model, device = item.state, draft.model, draft.device
++            model.reset()
++            model.reset_kv()
++            start, end = state.cursor, item.features.shape[0]
++            before = perf_counter_ns()
++            ids = torch.tensor(item.tokens[start+1:end+1], device=device).unsqueeze(0)
++            hidden, confirmed = model(item.features[start:].unsqueeze(0), input_ids=ids,
++                                      past_key_values=state.past, use_cache=True)
++            if device.type == "cuda":
++                torch.cuda.synchronize(device)
++            elapsed = perf_counter_ns()-before
++            if any(t.shape[2] != end for layer in confirmed for t in layer):
++                raise RuntimeError("Draft cache cursor mismatch")
++            prepared.append(PreparedDraft(item, hidden[:, -1:], confirmed, start, end, elapsed))
++        return prepared
++
++    @torch.inference_mode()
++    def generate(self, prepared, *, publish=True):
++        if not prepared:
++            return []
++        for p in prepared:
++            p.item.validate()
++        model = prepared[0].item.state.draft.model
++        device = prepared[0].hidden.device
++        begin = perf_counter_ns()
++        lengths = [p.end for p in prepared]
++        width = max(lengths)
++        past = tuple(tuple(torch.cat([F.pad(p.confirmed[layer][kv],
++                    (0, 0, 0, width-p.end)) for p in prepared], dim=0)
++                    for kv in range(2)) for layer in range(len(prepared[0].confirmed)))
++        hidden = torch.cat([p.hidden for p in prepared], dim=0)
++        packed = perf_counter_ns()
++        lengths_device = torch.tensor(lengths, device=device, dtype=torch.long)
++        mask = torch.arange(width, device=device)[None, :] < lengths_device[:, None]
++        prep_done = perf_counter_ns()
++        scratch_bytes = sum(t.numel()*t.element_size() for layer in past for t in layer)
++        proposals = [[] for _ in prepared]
++        active = list(range(len(prepared)))
++        metrics = dict(packing_ns=packed-begin, mask_position_ns=prep_done-packed,
++                       model_submit_ns=0, head_read_ns=0, gather_ns=0, publish_ns=0,
++                       forward_batch_sizes=[], head_batch_sizes=[], scratch_bytes=scratch_bytes)
++        for step in range(max(p.item.k for p in prepared)):
++            before = perf_counter_ns()
++            logits = model.lm_head(model.norm(hidden))[:, -1]
++            index = logits.argmax(dim=-1)
++            mapped = index + model.d2t[index]
++            ids = mapped.tolist()
++            metrics["head_read_ns"] += perf_counter_ns()-before
++            metrics["head_batch_sizes"].append(len(active))
++            if self.observer:
++                self.observer(step, tuple(active), hidden, past, logits,
++                              lengths_device+step, mask)
++            for row, token in zip(active, ids):
++                proposals[row].append(token)
++            keep = [j for j, row in enumerate(active) if step+1 < prepared[row].item.k]
++            if not keep:
++                break
++            before = perf_counter_ns()
++            if len(keep) != len(active):
++                selection = torch.tensor(keep, device=device, dtype=torch.long)
++                hidden = hidden.index_select(0, selection)
++                past = tuple(tuple(t.index_select(0, selection) for t in layer) for layer in past)
++                mask = mask.index_select(0, selection)
++                lengths_device = lengths_device.index_select(0, selection)
++                mapped = mapped.index_select(0, selection)
++                active = [active[j] for j in keep]
++            metrics["gather_ns"] += perf_counter_ns()-before
++            before = perf_counter_ns()
++            mask = torch.cat((mask, torch.ones((len(active), 1), dtype=torch.bool, device=device)), dim=1)
++            positions = (lengths_device+step).unsqueeze(1)
++            metrics["mask_position_ns"] += perf_counter_ns()-before
++            before = perf_counter_ns()
++            hidden, past = model(hidden, input_ids=mapped.unsqueeze(1), attention_mask=mask,
++                                 position_ids=positions, past_key_values=past, use_cache=True)
++            metrics["model_submit_ns"] += perf_counter_ns()-before
++            metrics["forward_batch_sizes"].append(len(active))
++        # Check every owner before publishing any state. Feedback KV stays local.
++        before = perf_counter_ns()
++        for p in prepared:
++            p.item.validate()
++        if publish:
++            for p in prepared:
++                state = p.item.state
++                state.past, state.cursor = p.confirmed, p.end
++                state.conditioned_tokens = tuple(p.item.tokens[1:p.end+1])
++                state.last_metrics = dict(mode="persistent", cursor_before=p.start,
++                    cursor_after=p.end, draft_tokens_processed=p.end-p.start+p.item.k-1,
++                    reused_draft_prefix_tokens=p.start, rollback_tokens=p.item.k-1,
++                    conditioning_ns=p.conditioning_ns, draft_incremental_ns=p.conditioning_ns,
++                    draft_full_rebuild_ns=0, draft_forwards=p.item.k, draft_kv_rows=p.end,
++                    draft_kv_bytes=sum(t.numel()*t.element_size() for layer in p.confirmed for t in layer))
++        metrics["publish_ns"] = perf_counter_ns()-before
++        metrics.update(generation_ns=perf_counter_ns()-begin,
++            conditioning_ns=sum(p.conditioning_ns for p in prepared),
++            draft_forwards=len(prepared)+len(metrics["forward_batch_sizes"]),
++            batched_draft_forwards=sum(n > 1 for n in metrics["forward_batch_sizes"]),
++            serial_equivalent_forwards=sum(p.item.k for p in prepared),
++            owner_order=[(p.item.request.seq_id, p.item.generation) for p in prepared])
++        self.last_metrics = metrics
++        return proposals
++
++    @torch.inference_mode()
++    def propose(self, items):
++        start = perf_counter_ns()
++        result = self.generate(self.prepare(items))
++        self.last_metrics["total_ns"] = perf_counter_ns()-start
++        return result
+--- baseline/tests/test_eagle3_draft_batch.py
++++ phase5.3/tests/test_eagle3_draft_batch.py
+@@ -0,0 +1,167 @@
++import unittest
++from types import SimpleNamespace
++
++import torch
++
++from nanovllm.speculative.draft_batch import DraftBatchExecutor, DraftBatchInput
++from nanovllm.speculative.draft_state import DraftState
++
++
++class TinyDraft(torch.nn.Module):
++    """FP64 causal masked cache control, not a replacement EAGLE implementation."""
++    def __init__(self):
++        super().__init__()
++        self.d2t = torch.zeros(7, dtype=torch.long)
++        self.norm = torch.nn.Identity()
++        self.lm_head = torch.nn.Linear(4, 7, bias=False, dtype=torch.float64)
++        with torch.no_grad():
++            self.lm_head.weight.copy_(torch.arange(28).reshape(7, 4)/28)
++        self.calls = 0
++        self.fail_at = None
++
++    def reset(self):
++        pass
++
++    def reset_kv(self):
++        pass
++
++    def forward(self, hidden, input_ids, past_key_values=None, use_cache=True,
++                attention_mask=None, position_ids=None):
++        self.calls += 1
++        if self.calls == self.fail_at:
++            raise RuntimeError("intentional draft failure")
++        b, n, _ = hidden.shape
++        old = 0 if past_key_values is None else past_key_values[0][0].shape[2]
++        if position_ids is None:
++            position_ids = torch.arange(old, old+n).expand(b, -1)
++        kv = hidden + input_ids[..., None]/100 + position_ids[..., None]/1000
++        values = kv[:, None]
++        if past_key_values is not None:
++            values = torch.cat((past_key_values[0][0], values), dim=2)
++        if attention_mask is None:
++            attention_mask = torch.ones((b, old+n), dtype=torch.bool)
++        outs = []
++        for j in range(n):
++            mask = attention_mask[:, :old+j+1].to(hidden.dtype)
++            total = (values[:, 0, :old+j+1]*mask[..., None]).sum(1)
++            outs.append(kv[:, j]+total/mask.sum(1)[:, None])
++        return torch.stack(outs, 1), ((values, values.clone()),)
++
++
++def inputs(lengths, ks=None):
++    model = TinyDraft()
++    draft = SimpleNamespace(model=model, device=torch.device("cpu"))
++    items = []
++    for i, n in enumerate(lengths):
++        request = SimpleNamespace(seq_id=i+10, generation=2)
++        state = DraftState(draft, request.seq_id)
++        state.request_generation = request.generation
++        features = torch.arange(n*4, dtype=torch.float64).reshape(n, 4)/10000+1
++        items.append(DraftBatchInput(state, request, 2, features,
++                                    tuple(j % 7 for j in range(n+1)), (ks or [3]*len(lengths))[i]))
++    return items
++
++
++class DraftBatchTests(unittest.TestCase):
++    def compare(self, lengths, ks=None):
++        serial, batch = inputs(lengths, ks), inputs(lengths, ks)
++        serial_states, expected = [], []
++        for item in serial:
++            calls = []
++            handle = item.state.draft.model.register_forward_hook(lambda m,a,out: calls.append(out))
++            try:
++                expected.append(item.state.propose(item.features,item.tokens,item.k,owner=item.request.seq_id))
++            finally:
++                handle.remove()
++            serial_states.append(calls)
++        observed = []
++        executor = DraftBatchExecutor(lambda *args: observed.append(args))
++        actual = executor.propose(batch)
++        self.assertEqual(actual, expected)
++        self.assertEqual(executor.last_metrics["draft_forwards"], len(batch)+max(i.k for i in batch)-1)
++        for a, b in zip(serial, batch):
++            self.assertEqual(a.state.cursor, b.state.cursor)
++            self.assertEqual(a.state.conditioned_tokens, b.state.conditioned_tokens)
++            for la, lb in zip(a.state.past, b.state.past):
++                for ta, tb in zip(la, lb):
++                    torch.testing.assert_close(ta, tb, rtol=0, atol=0)
++                    self.assertEqual(tb.shape[2], b.features.shape[0])
++        for step, owners, hidden, past, logits, next_pos, mask in observed:
++            for row, index in enumerate(owners):
++                self.assertEqual(int(next_pos[row]), lengths[index]+step)
++                self.assertEqual(int(mask[row].sum()), lengths[index]+step)
++                self.assertTrue(torch.isfinite(hidden[row]).all())
++                self.assertTrue(torch.isfinite(logits[row]).all())
++                reference_hidden, reference_kv = serial_states[index][step]
++                torch.testing.assert_close(hidden[row:row+1], reference_hidden[:, -1:], rtol=1e-12, atol=1e-12)
++                valid = mask[row].nonzero().flatten()
++                for layer, reference_layer in zip(past, reference_kv):
++                    for tensor, reference in zip(layer, reference_layer):
++                        torch.testing.assert_close(tensor[row:row+1].index_select(2,valid), reference,
++                                                   rtol=1e-12, atol=1e-12)
++        return batch
++
++    def test_ragged_boundaries_and_group_sizes(self):
++        for lengths in ([255, 256], [257, 511, 512], [513, 1025, 255, 257]):
++            with self.subTest(lengths=lengths):
++                self.compare(lengths)
++
++    def test_clipped_k_reorder(self):
++        self.compare([257, 255, 512, 256], [1, 3, 2, 1])
++
++    def test_repeated_accept_lengths_and_refill(self):
++        items = inputs([5, 9, 7, 6])
++        executor = DraftBatchExecutor()
++        for accepted in ([0, 1, 3, 2], [0, 0, 0, 0], [3, 3, 3, 3]):
++            executor.propose(items)
++            next_items = []
++            for item, a in zip(items, accepted):
++                end = item.state.cursor+1+a
++                tokens = item.tokens+tuple(2 for _ in range(1+a))
++                item.state.committed(end, tokens, owner=item.request.seq_id)
++                features = torch.cat((item.features, torch.ones((1+a, 4), dtype=torch.float64)))
++                next_items.append(DraftBatchInput(item.state, item.request, item.generation, features, tokens, 3))
++            items = list(reversed(next_items))
++        for item in items:
++            item.state.close()
++            self.assertIsNone(item.state.past)
++        with self.assertRaises(RuntimeError):
++            executor.propose(items)
++
++    def test_stale_foreign_duplicate_and_changed_prefix(self):
++        for kind in ("stale", "foreign", "duplicate", "prefix", "stale_state"):
++            items = inputs([5, 6])
++            if kind == "stale":
++                items[0].request.generation += 1
++            elif kind == "foreign":
++                items[0].request.seq_id += 100
++            elif kind == "duplicate":
++                items[1] = items[0]
++            elif kind == "stale_state":
++                items[0].state.request_generation -= 1
++            else:
++                items[0].state.cursor = 1
++                items[0].state.conditioned_tokens = (999,)
++            with self.subTest(kind=kind), self.assertRaises((RuntimeError, ValueError)):
++                DraftBatchExecutor().propose(items)
++
++    def test_exception_does_not_publish_scratch(self):
++        items = inputs([5, 6])
++        items[0].state.draft.model.fail_at = 3
++        with self.assertRaisesRegex(RuntimeError, "intentional"):
++            DraftBatchExecutor().propose(items)
++        for item in items:
++            self.assertIsNone(item.state.past)
++            self.assertEqual(item.state.cursor, 0)
++
++    def test_generation_change_during_execution_is_rejected(self):
++        items = inputs([5, 6])
++        def observer(*args):
++            items[0].request.generation += 1
++        with self.assertRaisesRegex(RuntimeError, "Stale"):
++            DraftBatchExecutor(observer).propose(items)
++        self.assertTrue(all(i.state.past is None for i in items))
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- baseline/tests/test_eagle3_phase53_collector.py
++++ phase5.3/tests/test_eagle3_phase53_collector.py
+@@ -0,0 +1,35 @@
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++
++from benchmarks.serving.eagle3_phase53_serving import acceptance_check, Collector, base
++
++
++class Phase53CollectorTests(unittest.TestCase):
++    def test_audit_wrapper_does_not_rebind_draft_callable(self):
++        executor = SimpleNamespace(propose=lambda items:[[1]],
++            last_metrics=dict(conditioning_ns=10,draft_forwards=2))
++        collector = Collector.__new__(Collector)
++        collector.current, collector.originals = {}, []
++        collector.runner = SimpleNamespace(call=lambda *args:'rpc-result')
++        coordinator = SimpleNamespace(draft_batch_executor=executor,drafts={})
++        collector.engine = SimpleNamespace(speculative_coordinator=coordinator,phase53_audit=True)
++        with patch.object(base.TimingCollector,'_install',lambda self:None):
++            collector._install()
++        item = SimpleNamespace(state=SimpleNamespace(last_metrics=dict(draft_tokens_processed=3)))
++        self.assertEqual(executor.propose([item]),[[1]])
++        self.assertEqual(collector.runner.call('unrelated'),'rpc-result')
++        self.assertEqual(collector.current['draft_forward_count'],2)
++
++    def test_live_tuple_and_json_list_commits(self):
++        for kind in (tuple,list):
++            run = dict(requests=[dict(sequence_id=7,output_limit=4)],steps=[dict(
++                selected_sequence_ids=[7],commits=[dict(proposed_token_ids=kind([3,4,5]),
++                    target_token_ids=kind([3,4,6,7]),accepted_length=2,
++                    committed_token_ids=kind([3,4,6]),fallback_token=6,finished=True,
++                    old_cursor=12,new_cursor=15)])])
++            self.assertTrue(acceptance_check(run,99))
++
++
++if __name__=='__main__':
++    unittest.main()

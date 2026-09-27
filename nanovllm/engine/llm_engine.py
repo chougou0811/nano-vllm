@@ -63,12 +63,13 @@ class LLMEngine:
 
     def generate_eagle3(self, prompt, *, draft_path, reference_path, max_tokens=32,
                         speculative_length=3, ignore_eos=False, audit=False,
-                        draft_state_mode="full_rebuild"):
+                        draft_state_mode="full_rebuild", adaptive_k=False, adaptive_prior=None):
         """Single-request greedy baseline; existing generate() remains unchanged."""
         from nanovllm.speculative.session import generate
         return generate(self, prompt, draft_path=draft_path, reference_path=reference_path,
                         max_tokens=max_tokens, k=speculative_length,
-                        ignore_eos=ignore_eos, audit=audit, draft_state_mode=draft_state_mode)
+                        ignore_eos=ignore_eos, audit=audit, draft_state_mode=draft_state_mode,
+                        adaptive_k=adaptive_k, adaptive_prior=adaptive_prior)
 
     def generate(
         self,

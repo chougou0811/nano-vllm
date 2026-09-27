@@ -34,15 +34,16 @@ class PersistentTests(unittest.TestCase):
                 f = DraftState(self.draft(), 'request', 'full_rebuild')
                 tokens = [1]*(length+1)
                 features = torch.arange(length).float()[:, None]
-                for a in accepts:
+                for iteration,a in enumerate(accepts):
+                    k=(1,6,1)[iteration%3] if accepts==[0]*8 else 3
                     previous = p.past[0][0].clone() if p.past else None
-                    self.assertEqual(p.propose(features,tokens,3,owner='request'),
-                                     f.propose(features,tokens,3,owner='request'))
+                    self.assertEqual(p.propose(features,tokens,k,owner='request'),
+                                     f.propose(features,tokens,k,owner='request'))
                     _, reference = f.draft.model(features[None], torch.tensor(tokens[1:])[None])
                     self.assertTrue(torch.equal(p.past[0][0],reference[0][0]))
                     if previous is not None:
                         self.assertTrue(torch.equal(previous,p.past[0][0][:,:,:previous.shape[2]]))
-                    self.assertEqual(p.last_metrics['rollback_tokens'],2)
+                    self.assertEqual(p.last_metrics['rollback_tokens'],k-1)
                     features = torch.cat((features,torch.full((1+a,1),99.)))
                     tokens.extend([3]*a+[2])
                     p.committed(len(features),tokens,owner='request')
@@ -77,10 +78,10 @@ class PersistentTests(unittest.TestCase):
         features=torch.randn(257,96)
         tokens=torch.randint(0,32,(258,)).tolist()
         with torch.inference_mode():
-            for a in (0,1,3,2,0,0):
-                proposals=p.propose(features,tokens,3,owner=1)
+            for k,a in ((1,0),(6,6),(1,1),(6,2),(1,0),(6,0)):
+                proposals=p.propose(features,tokens,k,owner=1)
                 f=DraftState(draft,1,'full_rebuild')
-                self.assertEqual(proposals,f.propose(features,tokens,3,owner=1))
+                self.assertEqual(proposals,f.propose(features,tokens,k,owner=1))
                 model.reset()
                 _,expected=model(features[None],input_ids=torch.tensor(tokens[1:])[None],use_cache=True)
                 for actual,reference_tensor in zip(p.past[0],expected[0]):

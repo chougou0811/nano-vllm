@@ -1,0 +1,368 @@
+{
+  "access_utc": "2026-09-25T05:57:14.686601+00:00",
+  "repositories": [
+    {
+      "project": "DeepSpec",
+      "repo": "https://github.com/deepseek-ai/DeepSpec.git",
+      "commit": "005e03b81cec38b7da6399833d609ee89a2587f2",
+      "prior_commit": "005e03b81cec38b7da6399833d609ee89a2587f2",
+      "changed": false
+    },
+    {
+      "project": "LMCache",
+      "repo": "https://github.com/LMCache/LMCache.git",
+      "commit": "57afd4c0b9bf54c683e6877bc6fe6e096e3a99de",
+      "prior_commit": "05fc77a0a7ababd9a7f2e343a771bc4bbc5b65cb",
+      "changed": true
+    },
+    {
+      "project": "Mooncake",
+      "repo": "https://github.com/kvcache-ai/Mooncake.git",
+      "commit": "16b7ba3c7364eb8d36d04378bc7d28013bea1a1e",
+      "prior_commit": "16b7ba3c7364eb8d36d04378bc7d28013bea1a1e",
+      "changed": false
+    },
+    {
+      "project": "TensorRT-LLM",
+      "repo": "https://github.com/NVIDIA/TensorRT-LLM.git",
+      "commit": "c76f4a856447820aa1f994b053da7580d69b657d",
+      "prior_commit": "8be31b0c99f3d08e3603b7621265efa7800395ba",
+      "changed": true
+    },
+    {
+      "project": "dflash",
+      "repo": "https://github.com/z-lab/dflash.git",
+      "commit": "07ebd93db9f472af339b644bb70221ad8428328a",
+      "prior_commit": "07ebd93db9f472af339b644bb70221ad8428328a",
+      "changed": false
+    },
+    {
+      "project": "flashinfer",
+      "repo": "https://github.com/flashinfer-ai/flashinfer.git",
+      "commit": "dc5b19bb74084a9829ca204d7da5930a36bd01a4",
+      "prior_commit": "28ae778e49ab8f6104c59cc9d43efdca4343f91f",
+      "changed": true
+    },
+    {
+      "project": "mirage",
+      "repo": "https://github.com/mirage-project/mirage.git",
+      "commit": "97de25929c0945a90b2b8870d5d9b186224a890f",
+      "prior_commit": "bc5d69612a345efe502a4dfb28faa672dd35dbeb",
+      "changed": true
+    },
+    {
+      "project": "sglang",
+      "repo": "https://github.com/sgl-project/sglang.git",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "prior_commit": "ea5baf4022e42ef13b089430ce2b1927a5c9d6f0",
+      "changed": true
+    },
+    {
+      "project": "vllm",
+      "repo": "https://github.com/vllm-project/vllm.git",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "prior_commit": "cccf7e1376ba082a2b14190a1a1fa963acb953b7",
+      "changed": true
+    }
+  ],
+  "files": [
+    {
+      "project": "DeepSpec",
+      "commit": "005e03b81cec38b7da6399833d609ee89a2587f2",
+      "path": "README.md",
+      "url": "https://github.com/deepseek-ai/DeepSpec/blob/005e03b81cec38b7da6399833d609ee89a2587f2/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/DeepSpec/README.md",
+      "sha256": "c9fd7eb6b162afaeb080c7f546260d23932295310aa1a0c1b0431d544cf0ba3b",
+      "bytes": 6524
+    },
+    {
+      "project": "DeepSpec",
+      "commit": "005e03b81cec38b7da6399833d609ee89a2587f2",
+      "path": "deepspec/modeling/dspark/common.py",
+      "url": "https://github.com/deepseek-ai/DeepSpec/blob/005e03b81cec38b7da6399833d609ee89a2587f2/deepspec/modeling/dspark/common.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/DeepSpec/deepspec/modeling/dspark/common.py",
+      "sha256": "45273cf6c806cdb1ad249df3e3b4d4dd34be47e74ae342608f60ede39febd088",
+      "bytes": 9516
+    },
+    {
+      "project": "DeepSpec",
+      "commit": "005e03b81cec38b7da6399833d609ee89a2587f2",
+      "path": "deepspec/modeling/dspark/qwen3/modeling.py",
+      "url": "https://github.com/deepseek-ai/DeepSpec/blob/005e03b81cec38b7da6399833d609ee89a2587f2/deepspec/modeling/dspark/qwen3/modeling.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/DeepSpec/deepspec/modeling/dspark/qwen3/modeling.py",
+      "sha256": "9ad90bcb926b32b5144e8a27816ef18b51e9e5ee083108c5fbd8f63bc92b3953",
+      "bytes": 20213
+    },
+    {
+      "project": "LMCache",
+      "commit": "57afd4c0b9bf54c683e6877bc6fe6e096e3a99de",
+      "path": "README.md",
+      "url": "https://github.com/LMCache/LMCache/blob/57afd4c0b9bf54c683e6877bc6fe6e096e3a99de/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/LMCache/README.md",
+      "sha256": "60b8409940e9fd6abf7ed04ac984cad5200b1b5fb428f138684038091c0f4dae",
+      "bytes": 10877
+    },
+    {
+      "project": "LMCache",
+      "commit": "57afd4c0b9bf54c683e6877bc6fe6e096e3a99de",
+      "path": "lmcache/v1/cache_engine.py",
+      "url": "https://github.com/LMCache/LMCache/blob/57afd4c0b9bf54c683e6877bc6fe6e096e3a99de/lmcache/v1/cache_engine.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/LMCache/lmcache/v1/cache_engine.py",
+      "sha256": "3e31afd9a0b6460735cf3dd1dfce60f592b51be185c2bd563fc6133a4ce479be",
+      "bytes": 85672
+    },
+    {
+      "project": "LMCache",
+      "commit": "57afd4c0b9bf54c683e6877bc6fe6e096e3a99de",
+      "path": "lmcache/v1/multiprocess/server.py",
+      "url": "https://github.com/LMCache/LMCache/blob/57afd4c0b9bf54c683e6877bc6fe6e096e3a99de/lmcache/v1/multiprocess/server.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/LMCache/lmcache/v1/multiprocess/server.py",
+      "sha256": "b05d8c5ff11d8f747a748c3b428d5470215754911af52f8ed2d16f2dcc8800b6",
+      "bytes": 17455
+    },
+    {
+      "project": "Mooncake",
+      "commit": "16b7ba3c7364eb8d36d04378bc7d28013bea1a1e",
+      "path": "README.md",
+      "url": "https://github.com/kvcache-ai/Mooncake/blob/16b7ba3c7364eb8d36d04378bc7d28013bea1a1e/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/Mooncake/README.md",
+      "sha256": "99d3246de03840db48fb1f062aa3161ff27660008b7a78346e32e3d213dd7add",
+      "bytes": 33457
+    },
+    {
+      "project": "Mooncake",
+      "commit": "16b7ba3c7364eb8d36d04378bc7d28013bea1a1e",
+      "path": "mooncake-transfer-engine/include/transfer_engine.h",
+      "url": "https://github.com/kvcache-ai/Mooncake/blob/16b7ba3c7364eb8d36d04378bc7d28013bea1a1e/mooncake-transfer-engine/include/transfer_engine.h",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/Mooncake/mooncake-transfer-engine/include/transfer_engine.h",
+      "sha256": "73c85715d35408be7ab04247e0e26890c75ae53ecb25a05dd5f791c15e5b964a",
+      "bytes": 11863
+    },
+    {
+      "project": "TensorRT-LLM",
+      "commit": "c76f4a856447820aa1f994b053da7580d69b657d",
+      "path": "README.md",
+      "url": "https://github.com/NVIDIA/TensorRT-LLM/blob/c76f4a856447820aa1f994b053da7580d69b657d/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/TensorRT-LLM/README.md",
+      "sha256": "73ad1a6bb0c5a20d68808bc700cdea18a573b57db4e69f7f53bd93b067e8b5b7",
+      "bytes": 29049
+    },
+    {
+      "project": "TensorRT-LLM",
+      "commit": "c76f4a856447820aa1f994b053da7580d69b657d",
+      "path": "tensorrt_llm/_torch/pyexecutor/py_executor.py",
+      "url": "https://github.com/NVIDIA/TensorRT-LLM/blob/c76f4a856447820aa1f994b053da7580d69b657d/tensorrt_llm/_torch/pyexecutor/py_executor.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/TensorRT-LLM/tensorrt_llm/_torch/pyexecutor/py_executor.py",
+      "sha256": "87d2e321951d809053993fefa45dffef190fdfad34ea16ff299a105a1e1544d1",
+      "bytes": 442334
+    },
+    {
+      "project": "dflash",
+      "commit": "07ebd93db9f472af339b644bb70221ad8428328a",
+      "path": "README.md",
+      "url": "https://github.com/z-lab/dflash/blob/07ebd93db9f472af339b644bb70221ad8428328a/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/dflash/README.md",
+      "sha256": "e39074de245d5893f1812b18755fd3a232fedeb38ed2608d9dfd0b5b4db8780b",
+      "bytes": 6005
+    },
+    {
+      "project": "dflash",
+      "commit": "07ebd93db9f472af339b644bb70221ad8428328a",
+      "path": "dflash/model.py",
+      "url": "https://github.com/z-lab/dflash/blob/07ebd93db9f472af339b644bb70221ad8428328a/dflash/model.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/dflash/dflash/model.py",
+      "sha256": "f55b7fe0a4c0b3073e0f9cdce547cce29f4b8e2168c4d2818760007c43b7651e",
+      "bytes": 25722
+    },
+    {
+      "project": "flashinfer",
+      "commit": "dc5b19bb74084a9829ca204d7da5930a36bd01a4",
+      "path": "README.md",
+      "url": "https://github.com/flashinfer-ai/flashinfer/blob/dc5b19bb74084a9829ca204d7da5930a36bd01a4/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/flashinfer/README.md",
+      "sha256": "472bc506d8a67ca7d8048650b9fc8f17d75f5adbaa016b505b76bbb48a8b4fbc",
+      "bytes": 11205
+    },
+    {
+      "project": "flashinfer",
+      "commit": "dc5b19bb74084a9829ca204d7da5930a36bd01a4",
+      "path": "flashinfer/autotune_cache.py",
+      "url": "https://github.com/flashinfer-ai/flashinfer/blob/dc5b19bb74084a9829ca204d7da5930a36bd01a4/flashinfer/autotune_cache.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/flashinfer/flashinfer/autotune_cache.py",
+      "sha256": "c9d387e1e5d22bfc5c4e601da8ee23586b1c3cb70cc4575b2e922874a511dd62",
+      "bytes": 31425
+    },
+    {
+      "project": "flashinfer",
+      "commit": "dc5b19bb74084a9829ca204d7da5930a36bd01a4",
+      "path": "flashinfer/gemm/gemm_base.py",
+      "url": "https://github.com/flashinfer-ai/flashinfer/blob/dc5b19bb74084a9829ca204d7da5930a36bd01a4/flashinfer/gemm/gemm_base.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/flashinfer/flashinfer/gemm/gemm_base.py",
+      "sha256": "d977aa4991e7b4bf5b8904436d7aa4cff5b5b66a9a394f2a6003b10125166fa8",
+      "bytes": 416748
+    },
+    {
+      "project": "flashinfer",
+      "commit": "dc5b19bb74084a9829ca204d7da5930a36bd01a4",
+      "path": "flashinfer/prefill.py",
+      "url": "https://github.com/flashinfer-ai/flashinfer/blob/dc5b19bb74084a9829ca204d7da5930a36bd01a4/flashinfer/prefill.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/flashinfer/flashinfer/prefill.py",
+      "sha256": "2164783314bd8fa1fc2ea9d8cd4e73c88aeb12d0408794ac1ac2763067d94f2d",
+      "bytes": 346192
+    },
+    {
+      "project": "mirage",
+      "commit": "97de25929c0945a90b2b8870d5d9b186224a890f",
+      "path": "README.md",
+      "url": "https://github.com/mirage-project/mirage/blob/97de25929c0945a90b2b8870d5d9b186224a890f/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/mirage/README.md",
+      "sha256": "c18c98c2dee22a1bbfefa5f6fc75581165248875a27a1936eb1883db2f115c45",
+      "bytes": 6706
+    },
+    {
+      "project": "mirage",
+      "commit": "97de25929c0945a90b2b8870d5d9b186224a890f",
+      "path": "python/mirage/mpk/persistent_kernel.py",
+      "url": "https://github.com/mirage-project/mirage/blob/97de25929c0945a90b2b8870d5d9b186224a890f/python/mirage/mpk/persistent_kernel.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/mirage/python/mirage/mpk/persistent_kernel.py",
+      "sha256": "cc6e38442e2f3883d8c42ae45a5dcb88f9320885862d1451815ed4c57b41ec0a",
+      "bytes": 150249
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "README.md",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/README.md",
+      "sha256": "0dc41a02fb7d12818d8a9f5ebc2af38e56ec84b7163e344af6b0f3d7590d31c8",
+      "bytes": 12063
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "docs/docs/advanced_features/piecewise_cuda_graph.mdx",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/docs/docs/advanced_features/piecewise_cuda_graph.mdx",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/docs/docs/advanced_features/piecewise_cuda_graph.mdx",
+      "sha256": "4328b8d405dc974734fd1fad77585a15ef48dc16bb364d1eb6f2ead7787e80d2",
+      "bytes": 17212
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/distributed/device_communicators/custom_all_reduce.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/distributed/device_communicators/custom_all_reduce.py",
+      "sha256": "fe4ef6eee5003f0422accd49db00e2b4523e516645aeba2a2a63d545cfbb8de5",
+      "bytes": 16850
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/distributed/device_communicators/custom_all_reduce_utils.py",
+      "sha256": "a1da32356092fd4523509aed86ce49abd1d58455be315c564471d91332ef8608",
+      "bytes": 19439
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/model_executor/runner_backend/breakable_cuda_graph_backend.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/model_executor/runner_backend/breakable_cuda_graph_backend.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/model_executor/runner_backend/breakable_cuda_graph_backend.py",
+      "sha256": "5ddd0801ac051361960a9af1b00f5a2ea4c9954e036daa92ff56ba03caa52da8",
+      "bytes": 10882
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/speculative/eagle_info.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/speculative/eagle_info.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/speculative/eagle_info.py",
+      "sha256": "0f8dabd7d0b0d7e7f179a1dd87f957b0172fbbae6436c6ddaef989b881b09590",
+      "bytes": 15346
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/speculative/eagle_worker_common.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/speculative/eagle_worker_common.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/speculative/eagle_worker_common.py",
+      "sha256": "e3a18f474b823339a2054ca783c9e007c231bd8fd53b120b328b9f7be6ac84c9",
+      "bytes": 26164
+    },
+    {
+      "project": "sglang",
+      "commit": "3e7e6529002db8125967967e0aba394986eec27d",
+      "path": "python/sglang/srt/speculative/eagle_worker_v2.py",
+      "url": "https://github.com/sgl-project/sglang/blob/3e7e6529002db8125967967e0aba394986eec27d/python/sglang/srt/speculative/eagle_worker_v2.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/sglang/python/sglang/srt/speculative/eagle_worker_v2.py",
+      "sha256": "0f03209c1086464f225879db5cd21b895e5bf80fe6ee77427b9895303c3cb6e9",
+      "bytes": 83922
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "README.md",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/README.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/README.md",
+      "sha256": "8d2e7cd8d120bcd91ddfa85ef957f7246021b4a3f46f2e1f4ccf084ec6c20026",
+      "bytes": 5708
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "docs/design/model_runner_v2.md",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/docs/design/model_runner_v2.md",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/docs/design/model_runner_v2.md",
+      "sha256": "5bb3b26d87976d32c90fbf1d297e8a2e4364e60c2f438475922072ed7fb2628e",
+      "bytes": 11244
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "vllm/compilation/backends.py",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/vllm/compilation/backends.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/vllm/compilation/backends.py",
+      "sha256": "16af622b799f22f30eaa1c78f7ccca9d54c7c72785ad89e90c87e859bf8ef876",
+      "bytes": 52310
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "vllm/distributed/device_communicators/custom_all_reduce.py",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/vllm/distributed/device_communicators/custom_all_reduce.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/vllm/distributed/device_communicators/custom_all_reduce.py",
+      "sha256": "50adb01de32bb910fd3c86e13125e36c9d7f3eb5efb36fba99f15c3675760cb9",
+      "bytes": 29160
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "vllm/v1/spec_decode/eagle.py",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/vllm/v1/spec_decode/eagle.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/vllm/v1/spec_decode/eagle.py",
+      "sha256": "b2b1f7d15117b43108be368756d9c6e9334d9415a070e46178e18bb7c6476378",
+      "bytes": 554
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "vllm/v1/worker/gpu/buffer_utils.py",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/vllm/v1/worker/gpu/buffer_utils.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/vllm/v1/worker/gpu/buffer_utils.py",
+      "sha256": "6597f701a30261bf250e9ad5a29737264624a1caa20527aeea0dad630325b093",
+      "bytes": 11930
+    },
+    {
+      "project": "vllm",
+      "commit": "29468dde8b515031dc6d4d9d06bf0a2fa0442098",
+      "path": "vllm/v1/worker/gpu/sample/sampler.py",
+      "url": "https://github.com/vllm-project/vllm/blob/29468dde8b515031dc6d4d9d06bf0a2fa0442098/vllm/v1/worker/gpu/sample/sampler.py",
+      "local": "/root/autodl-tmp/eagle3-phase5.2-sources/vllm/vllm/v1/worker/gpu/sample/sampler.py",
+      "sha256": "ddbcdab46010bf38a5fab9b9b6a2deed2ec5e883ebfe81e83f6d22f41e546771",
+      "bytes": 14064
+    }
+  ],
+  "note": "Default remote HEAD at access time; selected source snapshots, not builds. Errors retained."
+}

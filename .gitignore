@@ -198,3 +198,27 @@ benchmarks/eagle3-phase1/artifacts/
 benchmarks/eagle3-phase1.1/layer-operator-summary.csv
 benchmarks/eagle3-phase*/**/*.pt
 benchmarks/eagle3-phase*/**/*.bin
+
+# Local model weights, tensor dumps and environments
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+*.pth
+*.npy
+*.npz
+/models/
+/venvs/
+/.venvs/
+/hf-cache/
+/hf_cache/
+/.huggingface/
+/huggingface/
+
+# Raw profiling captures; keep compact reports, CSV summaries and scripts
+*.nsys-rep
+*.qdrep
+*.ncu-rep
+*.trace.json
+*.trace.json.gz
+benchmarks/eagle3-phase*/artifacts/

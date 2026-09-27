@@ -1,0 +1,189 @@
+{
+  "supplemental_files": [
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-correctness-20260924/manifest.json",
+      "bytes": 1151173,
+      "sha256": "298ed7699f97e019e0468b313001694ddd87997c6f6e4bc7e6b689da0610bcdd"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-correctness-20260924/rank0.json",
+      "bytes": 208965,
+      "sha256": "8d3c223971a8cf9e6d5eecfd8ad96829d780c765e1d10c6897e8860f4129a45e"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-correctness-20260924/rank1.json",
+      "bytes": 201825,
+      "sha256": "f9bd35f9c053acb6b3fe6fe4192b33ef71104d0e10d8ae4334b9f3b38e95f66e"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-correctness-20260924/sources.json",
+      "bytes": 36719,
+      "sha256": "57d4057271a155801f545bd3b485b58ac5906c34ac5aafb04bcb216e0bb93f02"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-performance-a-20260924/sources.json",
+      "bytes": 36719,
+      "sha256": "57d4057271a155801f545bd3b485b58ac5906c34ac5aafb04bcb216e0bb93f02"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-pilot-20260924/manifest.json",
+      "bytes": 44005,
+      "sha256": "b334486c2052bd03a9bfff413739a74ee4e0f8effbfb7e0ac2078f6832d52bd7"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-pilot-20260924/rank0.json",
+      "bytes": 13424,
+      "sha256": "36192223a77968329140f0d37c008fefdc70f4435a12219f1a3ec4b460c18850"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-pilot-20260924/rank1.json",
+      "bytes": 12843,
+      "sha256": "acd288b5a18a368af9ed86095b71089b8db996e02697fc5a5f4b5fc60e589a81"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-pilot-20260924/sources.json",
+      "bytes": 35063,
+      "sha256": "3d1dda2e39db877cad6cbb60b07799893f575ff90f2c2cf8859e3ff2630f792c"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-probe-20260924/rank0.json",
+      "bytes": 1699,
+      "sha256": "51f6312d1286262c8a62508b1a6acd27f5d4b6eff6211fb226dd5e99cdea1f9f"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle3-phase4.4a-probe-20260924/rank1.json",
+      "bytes": 1699,
+      "sha256": "e76ccb73ad41bbfa2a9bed9779ab2126e765a7dfa84ed0b9e0c9ccd467f05bab"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-analysis-check.log",
+      "bytes": 77,
+      "sha256": "e65bf74318365bf698dd069df7a2bbbf3f546b6d9a66ebadfdf15dfb19b9df3c"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-analysis-final.log",
+      "bytes": 1413,
+      "sha256": "c8082015a11c87bbcff7799b1bdc8d665721aa05bc9191ec5425a968d2e549c6"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-correctness-final.log",
+      "bytes": 2238,
+      "sha256": "915ac7a65e49b5a001a72a259f1b868a0521649fd00830e7e45f6b9ac3cade4e"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-correctness.log",
+      "bytes": 2238,
+      "sha256": "915ac7a65e49b5a001a72a259f1b868a0521649fd00830e7e45f6b9ac3cade4e"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-gpu-after.log",
+      "bytes": 2146,
+      "sha256": "25622ca50000a9d8451d85d6a73efea6290b9c6f3ed8d06acfe40cf7d2194bc7"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-metadata-reuse.log",
+      "bytes": 683,
+      "sha256": "e3026fdc0f1d7f4000ebab2cb91c006eb84622ddba075680e83da588a710dfa4"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-performance-a.log",
+      "bytes": 705,
+      "sha256": "c68173c3027d56a174dea8cccd7ecabbe3113bc3b48d8dd2714f96b815cab195"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-performance-b.log",
+      "bytes": 967,
+      "sha256": "31ba6e0d325687327f932ccfcaa43c69ebd7b1ae2bb0e14060f20ce9781aa7f5"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-performance-c.log",
+      "bytes": 967,
+      "sha256": "31ba6e0d325687327f932ccfcaa43c69ebd7b1ae2bb0e14060f20ce9781aa7f5"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-pilot.log",
+      "bytes": 8996,
+      "sha256": "8fe3fd2c9adc069d25352a7970fa5db55fea0e6f75ad86ab600272f769a19dcc"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-post-cpu.log",
+      "bytes": 744,
+      "sha256": "5caabe52ee49c4eb487c093cf528ccef380d1593dabc2081b977857214bbab09"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-post-focused.log",
+      "bytes": 3799,
+      "sha256": "8c7d4abb681a607215bc74df8ea9874077dc45191243e47ca7e26ef1cb802231"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-pre-cpu.log",
+      "bytes": 744,
+      "sha256": "7e67dd4af105d2e649aaecbcc244321a8cad3ab1c39c9f185fc3d5d748027bde"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-pre-focused.log",
+      "bytes": 3799,
+      "sha256": "8c7d4abb681a607215bc74df8ea9874077dc45191243e47ca7e26ef1cb802231"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-probe.log",
+      "bytes": 492,
+      "sha256": "2ab4016b6434760b45639a0c930a94ecb2a7fe15cbe9ac1953e1fd968924997b"
+    },
+    {
+      "path": "/root/autodl-tmp/eagle44a-stream-workspace-control.json",
+      "bytes": 944,
+      "sha256": "406733aa696b06055fb008ddcc6d0ff15034394f30416aeae9f9298a3552a37f"
+    }
+  ],
+  "new_sources": [
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_graph_key.py",
+      "bytes": 1873,
+      "sha256": "9a549318dc788083b5a8fe29be072a7b5b71b583f024800b81b2ad5632f15652"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_graph_probe.py",
+      "bytes": 2481,
+      "sha256": "6685da251b512f6844cf05fe6d922925a2f42808fa5ee74e2163f2fe756697db"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_graph_target.py",
+      "bytes": 18804,
+      "sha256": "bf2b2c1d4a5d6894ae602bca5db8124e75ffe225e2cd2d9a09cf59367a946186"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_phase44a.py",
+      "bytes": 14742,
+      "sha256": "0114a8919b96dc5f082fd44de8fe95cb84a8ad1ee39349635b04ea8507e53ae3"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_phase44a_reuse.py",
+      "bytes": 2711,
+      "sha256": "67d58640c8c0d35e801fe5cdb1470c76289470305c0caade28d065fed6de0757"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/benchmarks/serving/eagle3_phase44a_summary.py",
+      "bytes": 15418,
+      "sha256": "f580587faaa7d542da0a6bd47f43dadc70c2a14c7e71b6ae5618ea0cfb5efca3"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/docs/EAGLE3_PHASE4_4A.md",
+      "bytes": 8036,
+      "sha256": "8a827cd55e1d862a8b857e74ffa2487d0b85c9177a2cd8d30598e7d45bed6884"
+    },
+    {
+      "path": "/root/autodl-tmp/projects/nano-vllm/tests/test_eagle3_graph_prototype.py",
+      "bytes": 2115,
+      "sha256": "bfe495b09b7db4bead4387f5196853a24c222e80082362ff26f5b050724d5d98"
+    }
+  ],
+  "notes": {
+    "pilot": "Retained prototype control mailbox timeout and inference-mode cleanup error; no model capture disagreement",
+    "first_gate": "Numerical/state gate passed, but per-stream library workspace growth required a new gate",
+    "aborted_performance_a": "Terminated during startup after memory drift was detected; no measured samples",
+    "workspace_control": "Per-new-stream 8519680 bytes; shared-stream plateau; no backend setting change"
+  },
+  "no_commit": true,
+  "no_production_edits": true
+}

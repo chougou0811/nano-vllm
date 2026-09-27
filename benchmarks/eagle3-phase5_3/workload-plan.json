@@ -1,0 +1,32 @@
+{
+  "frozen_before_serving_measurement": true,
+  "existing_families": ["short-short", "short-long", "long-short", "long-long", "mixed-prompt", "mixed-output", "heldout-mixed"],
+  "new_families": [
+    {
+      "name": "copy-pattern",
+      "intended_acceptance": "high",
+      "prompt": "Continue this exact pattern without commentary: cobalt ivory jade; cobalt ivory jade; cobalt ivory jade;",
+      "contexts": [255, 1024],
+      "output_limits": [64, 128]
+    },
+    {
+      "name": "observatory-prose",
+      "intended_acceptance": "medium",
+      "prompt": "Write a concise narrative about repairing the tracking mechanism of an old observatory telescope. Begin: At dawn, Mira opened the service hatch and found",
+      "contexts": [255, 1024],
+      "output_limits": [64, 128]
+    },
+    {
+      "name": "routing-table",
+      "intended_acceptance": "low",
+      "prompt": "For integers 31 through 70, emit JSON records with n, n_squared, and bucket where bucket is (7*n+3) modulo 11. No explanation. Start with the opening square bracket.",
+      "contexts": [255, 1024],
+      "output_limits": [64, 128]
+    }
+  ],
+  "note": "Acceptance labels are hypotheses. Report measured rates without relabeling or dropping cells. No prompt selection after observing performance.",
+  "concurrencies": [1, 2, 4],
+  "repeats": 5,
+  "primary_systems": ["serial-eager", "batched-draft-eager"],
+  "mlp_replay": false
+}

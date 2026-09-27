@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-25",
+  "device": "NVIDIA GeForce RTX 4090",
+  "compute_capability": [8, 9],
+  "torch_cuda_can_device_access_peer_0_to_1": false,
+  "torch_cuda_can_device_access_peer_1_to_0": false,
+  "method": "Fresh process after profiling: torch.cuda.get_device_capability(0), torch.cuda.can_device_access_peer(0, 1), torch.cuda.can_device_access_peer(1, 0)",
+  "limitation": "Driver capability query, not a custom IPC transfer benchmark. No P2P bypass or driver change attempted."
+}

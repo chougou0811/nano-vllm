@@ -4,16 +4,19 @@ This project extends upstream nano-vllm for online LLM inference. Preserve the
 upstream copyright and license. The target is Qwen3-14B on two RTX 4090 24GB GPUs
 with tensor parallelism (TP) = 2.
 
-## Current Stage: Serving Benchmark Measurement
+## Current Stage: SLO-Aware Scheduler
 
 Qwen3-0.6B TP correctness and Qwen3-14B TP=2 functionality baselines are complete
 within their recorded coverage. The user has authorized an independent serving
 benchmark framework for deterministic arrivals, instrumentation, latency and SLO
-measurement, raw artifacts, and reproducible reports. Preserve production
-scheduler, batching, sampling, and model execution semantics. Validate with unit
+measurement, raw artifacts, and reproducible reports. Preserve original-policy
+behavior, sampling, and model execution semantics. Validate with unit
 tests and a small Qwen3-14B TP=2 BF16 eager run; do not draw performance conclusions
-from that framework validation. Do not implement EAGLE-3, SLO-aware scheduling,
-adaptive speculation, Poisson traffic, or performance optimizations yet.
+from that framework validation. The user now authorizes original/static/SLO-aware
+scheduler policies, focused production changes, correctness tests and measured
+comparisons. Preserve original policy as the default and leave TP, attention,
+sampling and model execution unchanged unless strictly required. Do not implement
+EAGLE-3, adaptive speculation, Poisson traffic or CUDA Graph optimization yet.
 
 Trace the existing call graph, tensor shapes, and data flow before changing code.
 Cover QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear,
@@ -58,12 +61,12 @@ runtime before experiments; these are not measurements from this checkout.
   revisions, parameters, workload and seeds, warmup/timing methodology, and raw
   results for each benchmark. Do not put model weights or secrets in Git.
 
-## Future Roadmap (Not Authorized for Implementation Yet)
+## Roadmap
 
-1. SLO-aware scheduling: instrument TTFT, TPOT/ITL, decode/prefill backlog,
+1. SLO-aware scheduling (current authorized stage): instrument TTFT, TPOT/ITL, decode/prefill backlog,
    request waiting time, and step latency. Adjust prefill token budget and decode
    priority using SLO pressure; compare against fixed chunked prefill.
-2. EAGLE-3: use a dedicated Qwen3-14B EAGLE-3 speculator, not a generic small
+2. EAGLE-3 (not yet authorized): use a dedicated Qwen3-14B EAGLE-3 speculator, not a generic small
    Qwen3 draft model. Adapt multi-token proposals, target parallel verification,
    accepted-prefix computation, multi-token Sequence advancement, and TP=2 target
    execution. Verify speculator availability and compatibility before adoption.

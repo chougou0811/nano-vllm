@@ -1,0 +1,33 @@
+{
+  "original_files": 280,
+  "unchanged_original_files": 278,
+  "allowed_changed": [
+    "nanovllm/speculative/batched_runtime.py",
+    "nanovllm/speculative/concurrent_engine.py"
+  ],
+  "unexpected_changes": [],
+  "new_source_files": [
+    "nanovllm/speculative/graph_policy.py",
+    "nanovllm/speculative/graph_entry.py",
+    "nanovllm/speculative/graph_cache.py",
+    "nanovllm/speculative/graph_runner.py",
+    "benchmarks/serving/eagle3_phase44b.py",
+    "benchmarks/serving/eagle3_phase44b_audit.py",
+    "benchmarks/serving/eagle3_phase44b_summary.py",
+    "tests/test_eagle3_graph_cache.py"
+  ],
+  "measured_sources_identical_to_gpu_gate": true,
+  "current_phase_source_hashes": {
+    "benchmarks/serving/eagle3_phase44b.py": "4d7d507d3f0adc91d1462492aa2881af8d5a190f1581146c0f32b866376058c0",
+    "benchmarks/serving/eagle3_phase44b_audit.py": "4fa24bace6320d3bcc2423110eea7f5f51e5b3dda40a8439660c47119fd0ed9c",
+    "benchmarks/serving/eagle3_phase44b_summary.py": "e7a9e54b908f8fdbe4c8621894a14e76d5761f64e1fc79fd6ef9b8b1fda0cca5",
+    "nanovllm/speculative/batched_runtime.py": "86f87b518fb0418c740584eb523c2e4fa780bdfea9881f05ef37148fec76d677",
+    "nanovllm/speculative/concurrent_engine.py": "a419c8d9b98f0c8880233f4e597f938cf8e0dab764e19cf4195e96be71b5a7b3",
+    "nanovllm/speculative/graph_cache.py": "41205f4f539e58e7282bd56bcf42ea1e713fe8307a5ffb94bf76ad29258b7ea9",
+    "nanovllm/speculative/graph_entry.py": "af1a7e640a6c05511d57eadb94056bcc4ebffc3ea274cdab4da998342d22b9ce",
+    "nanovllm/speculative/graph_policy.py": "63b7c2baaf99201dc1f6715a93032ccf0fad3012502662ee92e47aa38fb3f244",
+    "nanovllm/speculative/graph_runner.py": "55b45401fc7b8cb1302ddf863580b825d68cd2e4cf8dccf680fa9e4c59f8eb3b",
+    "tests/test_eagle3_graph_cache.py": "15f8460a9fe612db537120ddde4d80c3468f05f72afe1e6fdf3c34f5a571ae53"
+  },
+  "git_head": "0ce2c1e054035766f2ee27027ffc309d58ad8c0c"
+}

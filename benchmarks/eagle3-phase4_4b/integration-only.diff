@@ -1,0 +1,1488 @@
+--- a/nanovllm/speculative/batched_runtime.py
++++ b/nanovllm/speculative/batched_runtime.py
+@@ -160,7 +160,7 @@
+ 
+ 
+ @torch.inference_mode()
+-def dispatch(runner, operation, payload):
++def dispatch(runner, operation, payload, *, verification_forward=None):
+     entries = payload.get("entries", [])
+     states = _states(runner)
+     if operation == "begin":
+@@ -201,7 +201,9 @@
+         verification_layout(entries,{entry["seq_id"]:state for entry,state in zip(entries,current)},runner.block_size)
+         for entry,state in zip(entries,current):
+             state["blocks"] = list(entry["blocks"])
+-        logits,features,finite,replicated = _forward(runner,entries,current,verification=True)
++        logits,features,finite,replicated = (
++            _forward(runner,entries,current,verification=True) if verification_forward is None
++            else verification_forward(entries,current))
+         offsets = [0]
+         for entry in entries:
+             offsets.append(offsets[-1]+1+len(entry["proposals"]))
+--- a/nanovllm/speculative/concurrent_engine.py
++++ b/nanovllm/speculative/concurrent_engine.py
+@@ -31,7 +31,7 @@
+     """
+ 
+     def __init__(self, model, *, draft_path, reference_path,
+-                 speculative_length=3, audit=False, **kwargs):
++                 speculative_length=3, audit=False, target_graph_config=None, **kwargs):
+         config_fields = {field.name for field in fields(Config)}
+         config_kwargs = {key: value for key, value in kwargs.items()
+                          if key in config_fields}
+@@ -49,15 +49,19 @@
+         self.events = []
+         self._closed = False
+         self._faulted = False
++        runner_type = ConcurrentModelRunner
++        if target_graph_config is not None:
++            from nanovllm.speculative.graph_runner import GraphConcurrentModelRunner
++            runner_type = GraphConcurrentModelRunner
+         ctx = mp.get_context("spawn")
+         for rank in range(1, config.tensor_parallel_size):
+             event = ctx.Event()
+-            process = ctx.Process(target=ConcurrentModelRunner,
++            process = ctx.Process(target=runner_type,
+                                   args=(config, rank, event))
+             process.start()
+             self.ps.append(process)
+             self.events.append(event)
+-        self.model_runner = ConcurrentModelRunner(config, 0, self.events)
++        self.model_runner = runner_type(config, 0, self.events)
+         try:
+             self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
+             config.eos = self.tokenizer.eos_token_id
+@@ -74,6 +78,8 @@
+             self.scheduler = SpeculativeSchedulerAdapter(
+                 self.scheduler, self.speculative_coordinator
+             )
++            if target_graph_config is not None:
++                self.model_runner.call("graph_control", "init", target_graph_config)
+         except Exception:
+             self.model_runner.call("exit")
+             del self.model_runner
+--- /dev/null
++++ b/nanovllm/speculative/graph_policy.py
+@@ -0,0 +1,114 @@
++"""CPU-only bounded exact-key policy for opt-in concurrent target graphs."""
++from collections import OrderedDict
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class GraphKey:
++    rows: int
++    batch: int
++    query_lengths: tuple[int, ...]
++    max_q: int
++    max_k: int
++    table_width: int
++    block_size: int
++    model_identity: str
++    dtype: str
++    device_class: str
++    tp_size: int
++    training: bool
++    feature_layers: tuple[int, ...]
++
++
++def make_key(layout, *, block_size, model_identity, dtype, device_class,
++             tp_size, training, feature_layers):
++    cu = layout["cu_seqlens_q"]
++    lengths = tuple(b-a for a,b in zip(cu,cu[1:]))
++    if not lengths or any(q != 4 for q in lengths) or cu[-1] not in (4,8,16):
++        return None
++    tables = layout["block_tables"]
++    widths = {len(t) for t in tables}
++    if len(widths) != 1 or len(tables) != len(lengths):
++        raise ValueError("Invalid rectangular graph block table")
++    if len(layout["context_lens"]) != len(lengths):
++        raise ValueError("Missing graph context lengths")
++    return GraphKey(cu[-1],len(lengths),lengths,max(lengths),
++                    max(c+q for c,q in zip(layout["context_lens"],lengths)),
++                    len(tables[0]),block_size,model_identity,dtype,device_class,
++                    tp_size,training,tuple(feature_layers))
++
++
++@dataclass(frozen=True)
++class GraphCacheConfig:
++    max_graph_entries: int = 4
++    capture_policy: str = "second"
++    max_captures: int = 16
++    max_observed_keys: int = 4096
++    max_event_records: int = 8192
++
++    def __post_init__(self):
++        if self.max_graph_entries not in (2,4,8):
++            raise ValueError("Phase 4.4B supports capacities 2/4/8")
++        if self.capture_policy not in ("never","second"):
++            raise ValueError("Expected never or second capture policy")
++        if self.max_captures < 0 or min(self.max_observed_keys,self.max_event_records)<1:
++            raise ValueError("Invalid graph resource bound")
++
++
++class BoundedPolicy:
++    def __init__(self, config):
++        self.config = config
++        self.seen = OrderedDict()
++        self.lru = OrderedDict()
++        self.captures = 0
++        self.step = 0
++
++    def observe(self, key):
++        self.step += 1
++        if key is None:
++            return 0
++        count = self.seen.pop(key,0)+1
++        self.seen[key] = count
++        if len(self.seen)>self.config.max_observed_keys:
++            self.seen.popitem(last=False)
++        return count
++
++    def should_capture(self, key):
++        return (key is not None and key not in self.lru and
++                self.config.capture_policy=="second" and self.seen.get(key,0)>=2 and
++                self.captures<self.config.max_captures)
++
++    def victim(self):
++        return next(iter(self.lru)) if len(self.lru)>=self.config.max_graph_entries else None
++
++    def insert(self, key):
++        if key in self.lru or len(self.lru)>=self.config.max_graph_entries:
++            raise RuntimeError("Invalid graph insertion without coordinated eviction")
++        self.lru[key] = self.step
++        self.captures += 1
++
++    def touch(self, key):
++        self.lru.pop(key)
++        self.lru[key] = self.step
++
++
++def agree(plans):
++    if not plans or any(p.get("error") for p in plans):
++        raise RuntimeError("Graph plan construction failed")
++    # A layout/generation disagreement is unsafe even for eager collectives.
++    for field in ("layout_digest","epoch","policy"):
++        if any(p[field]!=plans[0][field] for p in plans[1:]):
++            raise RuntimeError(f"Unsafe rank graph plan mismatch: {field}")
++    if any(p["key"]!=plans[0]["key"] for p in plans[1:]):
++        return "eager", "key_mismatch"
++    if plans[0]["key"] is None:
++        return "eager", "unsupported_shape"
++    if all(p["available"] for p in plans):
++        return "replay", "hit"
++    if any(p["available"] for p in plans):
++        return "eager", "rank_missing_key"
++    if any(p["registry"]!=plans[0]["registry"] for p in plans[1:]):
++        return "eager", "registry_mismatch"
++    if all(p["capture"] for p in plans):
++        return "capture", "second_occurrence"
++    return "eager", "miss"
+--- /dev/null
++++ b/nanovllm/speculative/graph_entry.py
+@@ -0,0 +1,136 @@
++"""Fixed-shape tensor core promoted from the frozen Phase 4.4A prototype."""
++import torch
++import torch.distributed as dist
++from nanovllm.utils.context import set_context, get_context, reset_context
++
++
++class GraphEntry:
++    def __init__(self, runner, key, layout):
++        self.model = runner.model
++        self.rank = runner.rank
++        self.kv_cache = runner.kv_cache
++        self.control_group = runner.control_group
++        self.key = key
++        self.graph = None
++        # cuBLAS retains a workspace per stream. Share one engine-owned capture
++        # stream so graph-key turnover cannot grow that process-lifetime cache.
++        self.stream = runner.capture_stream
++        self.device = runner.kv_cache.device
++        self.host, self.inputs = {}, {}
++        for name in ("input_ids","positions","cu_seqlens_q","cu_seqlens_k","slot_mapping","block_tables"):
++            dtype = torch.int64 if name in ("input_ids","positions") else torch.int32
++            example = torch.tensor(layout[name],dtype=dtype)
++            self.host[name] = torch.empty_like(example,pin_memory=True)
++            self.inputs[name] = torch.empty(example.shape,dtype=dtype,device=self.device)
++        cfg = runner.config.hf_config
++        self.hidden = torch.empty(key.rows,cfg.hidden_size,dtype=cfg.dtype,device=self.device)
++        self.features = torch.empty(key.rows,3*cfg.hidden_size,dtype=cfg.dtype,device=self.device)
++        self.local_logits = torch.empty(key.rows,cfg.vocab_size//runner.world_size,dtype=cfg.dtype,device=self.device)
++        self.logits = (torch.empty(key.rows,cfg.vocab_size,dtype=cfg.dtype,device=self.device)
++                       if runner.rank == 0 else None)
++        self.capture_count = 0
++        self.replays = 0
++        self.addresses = self.pointers()
++        self.weight_addresses = tuple(p.data_ptr() for p in runner.model.parameters())
++        self.kv_address = runner.kv_cache.data_ptr()
++
++    def pointers(self):
++        return {name: value.data_ptr() for name,value in dict(
++            self.inputs,hidden=self.hidden,features=self.features,
++            local_logits=self.local_logits,logits=self.logits).items() if value is not None}
++
++    def update(self, layout):
++        if self.pointers() != self.addresses or self.kv_cache.data_ptr()!=self.kv_address:
++            raise RuntimeError("Graph static address changed")
++        for name,value in self.inputs.items():
++            source = torch.tensor(layout[name],dtype=value.dtype)
++            if source.shape != value.shape:
++                raise RuntimeError("Graph metadata shape changed")
++            self.host[name].copy_(source)
++            value.copy_(self.host[name],non_blocking=True)
++
++    def _core(self):
++        x = self.inputs
++        set_context(True,cu_seqlens_q=x["cu_seqlens_q"],cu_seqlens_k=x["cu_seqlens_k"],
++                    max_seqlen_q=self.key.max_q,max_seqlen_k=self.key.max_k,
++                    slot_mapping=x["slot_mapping"],block_tables=x["block_tables"])
++        captured, handles = [], []
++
++        def capture(module, args):
++            _, hidden, residual = args
++            captured.append(hidden.clone() if residual is None else
++                            (hidden.float()+residual.float()).to(hidden.dtype))
++
++        original_gather = dist.gather
++
++        def gather(tensor, *args, **kwargs):
++            self.local_logits.copy_(tensor)
++            return original_gather(tensor,*args,**kwargs)
++
++        try:
++            for index in self.key.feature_layers:
++                handles.append(self.model.model.layers[index].register_forward_pre_hook(capture))
++            self.hidden.copy_(self.model(x["input_ids"],x["positions"]))
++            get_context().is_prefill = False
++            dist.gather = gather
++            logits = self.model.compute_logits(self.hidden)
++            if logits is not None:
++                self.logits.copy_(logits)
++            self.features.copy_(torch.cat(captured,dim=-1))
++        finally:
++            dist.gather = original_gather
++            for handle in handles:
++                handle.remove()
++            reset_context()
++
++    def capture(self, layout):
++        self.update(layout)
++        self.stream.wait_stream(torch.cuda.current_stream())
++        with torch.cuda.stream(self.stream):
++            for _ in range(3):
++                self._core()
++        torch.cuda.current_stream().wait_stream(self.stream)
++        torch.cuda.synchronize()
++        dist.barrier(group=self.control_group)
++        self.graph = torch.cuda.CUDAGraph()
++        with torch.cuda.graph(self.graph,stream=self.stream):
++            self._core()
++        torch.cuda.synchronize()
++        self.capture_count += 1
++        if tuple(p.data_ptr() for p in self.model.parameters()) != self.weight_addresses:
++            raise RuntimeError("Model storage changed during capture")
++
++    def replay(self, layout, states):
++        self.update(layout)
++        self.graph.replay()
++        self.replays += 1
++        # Static output storage must never become persistent request-owned state.
++        features = self.features.clone()
++        logits = self.logits
++        finite = torch.isfinite(features).all()
++        if self.rank == 0:
++            finite &= torch.isfinite(logits).all()
++        finite = finite.to(torch.int32)
++        dist.all_reduce(finite,op=dist.ReduceOp.MIN)
++        replicated = True
++        if any(state["audit"] for state in states):
++            reference = features.clone()
++            dist.broadcast(reference,0)
++            same = torch.tensor(int(torch.equal(features,reference)),device=features.device)
++            dist.all_reduce(same,op=dist.ReduceOp.MIN)
++            replicated = bool(same.item())
++        return logits,features,bool(finite.item()),replicated
++
++    @torch.inference_mode()
++    def release(self):
++        torch.cuda.synchronize()
++        if self.graph is not None:
++            self.graph.reset()
++            self.graph = None
++        for value in (*self.inputs.values(),self.hidden,self.features,self.local_logits,self.logits):
++            if value is not None:
++                value.zero_()
++        torch.cuda.synchronize()
++        self.model = None
++        self.kv_cache = None
++        self.control_group = None
+--- /dev/null
++++ b/nanovllm/speculative/graph_cache.py
+@@ -0,0 +1,175 @@
++"""Bounded, exact-context target graphs; no request/transaction ownership."""
++from collections import deque
++from dataclasses import asdict
++import gc
++import hashlib
++import json
++from time import perf_counter_ns
++
++import torch
++import torch.distributed as dist
++
++from nanovllm.speculative import batched_runtime as runtime
++from nanovllm.speculative.graph_entry import GraphEntry
++from nanovllm.speculative.graph_policy import BoundedPolicy, GraphCacheConfig, agree, make_key
++
++
++def digest(value):
++    return hashlib.sha256(json.dumps(value,sort_keys=True,default=str).encode()).hexdigest()
++
++
++class GraphCache:
++    def __init__(self, runner, config):
++        self.runner = runner
++        self.entries = {}
++        self.epoch = 0
++        self.enabled = True
++        self.model_identity = digest(runner.config.hf_config.to_dict())
++        self.configure(config)
++
++    def configure(self, config):
++        if self.entries:
++            raise RuntimeError("Release graph entries before reconfiguration")
++        self.config = config if isinstance(config,GraphCacheConfig) else GraphCacheConfig(**config)
++        self.policy = BoundedPolicy(self.config)
++        self.events = deque(maxlen=self.config.max_event_records)
++        self.dropped_events = 0
++        self.lifetimes = []
++        self.epoch += 1
++        self.peak_allocated = self.peak_reserved = 0
++        self.peak_live_bytes = self.peak_live_reserved = 0
++
++    def memory(self):
++        return dict(allocated=torch.cuda.memory_allocated(),reserved=torch.cuda.memory_reserved(),
++                    peak_allocated=max(self.peak_allocated,torch.cuda.max_memory_allocated()),
++                    peak_reserved=max(self.peak_reserved,torch.cuda.max_memory_reserved()))
++
++    def emit(self, event):
++        if len(self.events)==self.events.maxlen:
++            self.dropped_events += 1
++        self.events.append(event)
++
++    def consensus(self, value):
++        values = [None]*self.runner.world_size
++        dist.all_gather_object(values,value,group=self.runner.control_group)
++        return values
++
++    def layout_key(self, entries, states):
++        runner = self.runner
++        layout = runtime.verification_layout(entries,
++            {e["seq_id"]:s for e,s in zip(entries,states)},runner.block_size)
++        cfg = runner.config.hf_config
++        key = make_key(layout,block_size=runner.block_size,model_identity=self.model_identity,
++            dtype=str(cfg.dtype),device_class=str(torch.cuda.get_device_capability()),
++            tp_size=runner.world_size,training=runner.model.training,
++            feature_layers=(2,cfg.num_hidden_layers//2,cfg.num_hidden_layers-3))
++        return layout,key
++
++    def release_key(self, key, reason):
++        dist.barrier(group=self.runner.control_group)
++        before = self.memory()
++        obj,meta = self.entries.pop(key)
++        start = perf_counter_ns()
++        obj.release()
++        del obj
++        self.policy.lru.pop(key)
++        gc.collect()
++        torch.cuda.empty_cache()
++        meta.update(released_step=self.policy.step,release_reason=reason,
++                    release_ns=perf_counter_ns()-start,memory_after_release=self.memory())
++        self.emit(dict(kind="release",key=digest(asdict(key)),reason=reason,
++                       before=before,after=self.memory(),entry_id=meta["entry_id"],
++                       duration_ns=meta["release_ns"]))
++
++    @torch.inference_mode()
++    def clear(self):
++        for key in list(self.policy.lru):
++            self.release_key(key,"clear")
++
++    def snapshot(self):
++        return dict(rank=self.runner.rank,epoch=self.epoch,config=asdict(self.config),
++            events=list(self.events),lifetimes=self.lifetimes,dropped_events=self.dropped_events,
++            live_entries=len(self.entries),seen_keys=len(self.policy.seen),memory=self.memory(),
++            peak_live_bytes=self.peak_live_bytes,peak_live_reserved=self.peak_live_reserved,
++            target_states=len(getattr(self.runner,"_eagle_batch_states",{})))
++
++    def capture(self, key, layout):
++        runner = self.runner
++        victim = self.policy.victim()
++        if victim is not None:
++            self.release_key(victim,"eviction")
++        before = self.memory()
++        self.peak_allocated = before["peak_allocated"]
++        self.peak_reserved = before["peak_reserved"]
++        torch.cuda.reset_peak_memory_stats()
++        start = perf_counter_ns()
++        slots = torch.tensor(layout["slot_mapping"],dtype=torch.long,device=runner.kv_cache.device)
++        physical,offsets = slots//runner.block_size,slots%runner.block_size
++        saved = runner.kv_cache[:,:,physical,offsets].clone()
++        obj = GraphEntry(runner,key,layout)
++        obj.capture(layout)
++        runner.kv_cache[:,:,physical,offsets] = saved
++        torch.cuda.synchronize()
++        peak = dict(allocated=torch.cuda.max_memory_allocated(),reserved=torch.cuda.max_memory_reserved())
++        self.peak_allocated = max(self.peak_allocated,peak["allocated"])
++        self.peak_reserved = max(self.peak_reserved,peak["reserved"])
++        del saved,slots,physical,offsets
++        after = self.memory()
++        meta = dict(entry_id=len(self.lifetimes),key=asdict(key),key_id=digest(asdict(key)),
++            created_step=self.policy.step,last_used=self.policy.step,capture_count=1,replay_count=0,
++            warmup_target_forwards=3,capture_recordings=1,
++            capture_ns=perf_counter_ns()-start,allocated_delta=after["allocated"]-before["allocated"],
++            reserved_delta=after["reserved"]-before["reserved"],capture_peak=peak,
++            before=before,after=after,addresses=obj.addresses)
++        self.entries[key] = (obj,meta)
++        self.policy.insert(key)
++        self.lifetimes.append(meta)
++        self.peak_live_bytes = max(self.peak_live_bytes,sum(m["allocated_delta"] for _,m in self.entries.values()))
++        self.peak_live_reserved = max(self.peak_live_reserved,sum(max(0,m["reserved_delta"]) for _,m in self.entries.values()))
++        return meta
++
++    @torch.inference_mode()
++    def forward(self, entries, states):
++        if not self.enabled:
++            return runtime._forward(self.runner,entries,states,verification=True)
++        start = perf_counter_ns()
++        error = None
++        layout = key = None
++        try:
++            layout,key = self.layout_key(entries,states)
++        except Exception as exc:
++            error = repr(exc)
++        occurrence = self.policy.observe(key)
++        available = key in self.entries
++        plan = dict(key=key,layout_digest=digest((entries,layout)),epoch=self.epoch,
++            policy=asdict(self.config),available=available,capture=self.policy.should_capture(key),
++            registry=list(self.policy.lru),error=error)
++        plans = self.consensus(plan)
++        action,reason = agree(plans)
++        agreement_ns = perf_counter_ns()-start
++        event = dict(kind="verify",step=self.policy.step,seq_ids=[e["seq_id"] for e in entries],
++            key=asdict(key) if key else None,key_id=digest(asdict(key)) if key else None,
++            occurrence=occurrence,action=action,reason=reason,agreement_ns=agreement_ns,
++            q_lengths=[1+len(e["proposals"]) for e in entries],
++            contexts=layout["context_lens"],capture_ns=0,replay_ns=0,eager_ns=0)
++        if action=="replay":
++            obj,meta = self.entries[key]
++            if obj.kv_address!=self.runner.kv_cache.data_ptr():
++                raise RuntimeError("KV allocation changed while graph is live")
++            begin = perf_counter_ns()
++            result = obj.replay(layout,states)
++            event["replay_ns"] = perf_counter_ns()-begin
++            event["entry_id"] = meta["entry_id"]
++            meta["replay_count"] += 1
++            meta["last_used"] = self.policy.step
++            self.policy.touch(key)
++        else:
++            begin = perf_counter_ns()
++            result = runtime._forward(self.runner,entries,states,verification=True)
++            event["eager_ns"] = perf_counter_ns()-begin
++            if action=="capture":
++                meta = self.capture(key,layout)
++                event.update(capture_ns=meta["capture_ns"],entry_id=meta["entry_id"])
++        event.update(total_ns=perf_counter_ns()-start,live_entries=len(self.entries),memory=self.memory())
++        self.emit(event)
++        return result
+--- /dev/null
++++ b/nanovllm/speculative/graph_runner.py
+@@ -0,0 +1,51 @@
++"""Opt-in graph runner used only by ConcurrentLLMEngine."""
++from datetime import timedelta
++
++import torch
++import torch.distributed as dist
++
++from nanovllm.speculative.concurrent_engine import ConcurrentModelRunner
++from nanovllm.speculative.batched_runtime import dispatch
++from nanovllm.speculative.graph_cache import GraphCache
++
++
++class GraphConcurrentModelRunner(ConcurrentModelRunner):
++    def __init__(self,*args,**kwargs):
++        self.graph_cache = None
++        self.control_group = None
++        super().__init__(*args,**kwargs)
++
++    def eagle3_batch(self, operation, payload):
++        forward = self.graph_cache.forward if self.graph_cache is not None else None
++        return dispatch(self,operation,payload,verification_forward=forward)
++
++    @torch.inference_mode()
++    def graph_control(self, operation, payload=None):
++        payload = payload or {}
++        result = None
++        if operation=="init":
++            self.control_group = dist.new_group(backend="gloo",timeout=timedelta(seconds=120))
++            self.capture_stream = torch.cuda.Stream()
++            self.graph_cache = GraphCache(self,payload)
++        elif operation=="reset":
++            self.graph_cache.clear()
++            self.graph_cache.configure(payload.get("config",self.graph_cache.config))
++            self.graph_cache.enabled = payload.get("enabled",True)
++        elif operation=="clear":
++            self.graph_cache.clear()
++        elif operation=="snapshot":
++            result = self.graph_cache.consensus(self.graph_cache.snapshot())
++        else:
++            raise ValueError(operation)
++        # The original RPC transport is a single-slot mailbox.
++        dist.barrier(group=self.control_group)
++        return result
++
++    def exit(self):
++        if self.graph_cache is not None:
++            self.graph_cache.clear()
++            self.graph_cache = None
++        if self.control_group is not None:
++            dist.destroy_process_group(self.control_group)
++            self.control_group = None
++        super().exit()
+--- /dev/null
++++ b/benchmarks/serving/eagle3_phase44b.py
+@@ -0,0 +1,296 @@
++"""Phase 4.4B correctness gate and frozen-contract closed-loop trials."""
++import argparse
++import atexit
++from dataclasses import asdict
++import hashlib
++import importlib.metadata
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++from time import perf_counter_ns
++import traceback
++
++import torch
++
++from nanovllm import LLM
++from nanovllm.speculative.concurrent_engine import ConcurrentLLMEngine
++from nanovllm.speculative.graph_policy import GraphCacheConfig
++from benchmarks.serving import eagle3_phase42 as frozen
++
++
++ROOT = Path("/root/autodl-tmp/eagle3-phase4.4b-20260924")
++CONFIG = dict(tensor_parallel_size=2,enforce_eager=True,max_model_len=1024,
++              max_num_batched_tokens=2048,max_num_seqs=4,gpu_memory_utilization=.70,
++              scheduler_policy="original")
++
++
++def hashes():
++    paths = list(Path("nanovllm").rglob("*.py"))+list(Path("tests").glob("test_*.py"))
++    paths += [p for p in Path("benchmarks/serving").glob("*.py") if "44b_summary" not in p.name]
++    return {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
++
++
++def policy(system):
++    return asdict(GraphCacheConfig(max_graph_entries=int(system[-1]) if system.startswith("second") else 4,
++                                   capture_policy="second" if system.startswith("second") else "never"))
++
++
++def reset(engine, system):
++    engine.model_runner.call("graph_control","reset",dict(config=policy(system),enabled=system!="eager"))
++
++
++def clean(engine):
++    state = frozen.cleanup_state(engine,"speculative")
++    ranks = engine.model_runner.call("graph_control","snapshot")
++    if any(state.values()) or any(r["target_states"] for r in ranks):
++        raise RuntimeError("Request/transaction state leak")
++    return state,ranks
++
++
++def audit_run(engine,requests,concurrency,system):
++    reset(engine,system)
++    runner = engine.model_runner
++    runner.call("graph_control","audit",dict(enabled=True))
++    trace,drafts = [],[]
++    call,step = runner.call,engine.step
++
++    def observed_call(method,*args):
++        value = call(method,*args)
++        if method=="eagle3_batch" and args[0] in ("verify","commit"):
++            trace.append(dict(operation=args[0],payload=args[1],result=value))
++        return value
++
++    def observed_step():
++        value = step()
++        last = engine.speculative_coordinator.last_step
++        if last.get("kind")=="decode":
++            trace.append(dict(commits=[asdict(x) for x in last["entries"]]))
++        drafts.append({sid:dict(C=s.target_cursor,D=s.draft_cursor,
++                               actual_D=engine.speculative_coordinator.drafts[sid].cursor)
++                       for sid,s in engine.speculative_coordinator.requests.items()})
++        return value
++
++    runner.call,engine.step = observed_call,observed_step
++    try:
++        run = frozen.run_closed_loop(engine,"speculative",requests,concurrency)
++    finally:
++        runner.call,engine.step = call,step
++    audits = runner.call("graph_control","audit_snapshot")
++    _,cache = clean(engine)
++    mapping = {r["sequence_id"]:r["request_id"] for r in run["requests"]}
++    physical_blocks = {}
++    # Normalize only ownership identifiers, not token IDs/cursors or outputs.
++    for item in trace:
++        for entry in item.get("payload",{}).get("entries",[]):
++            entry["seq_id"] = mapping[entry["seq_id"]]
++            if "blocks" in entry:
++                for block in entry["blocks"]:
++                    physical_blocks.setdefault(block,len(physical_blocks))
++                entry["blocks"] = [physical_blocks[b] for b in entry["blocks"]]
++        for entry in item.get("commits",[]):
++            entry["seq_id"] = mapping[entry["seq_id"]]
++        if "result" in item:
++            result = item["result"]
++            ranks = result["ranks"] if isinstance(result,dict) else result
++            for rank in ranks:
++                for row in rank:
++                    row[0] = mapping[row[0]]
++    for audit in audits:
++        for item in audit["states"]:
++            for row in item["rows"]:
++                row["seq_id"] = mapping[row["seq_id"]]
++    drafts = [{mapping[sid]:value for sid,value in row.items()} for row in drafts]
++    runner.call("graph_control","clear")
++    released = clean(engine)[1]
++    return dict(outputs=[r["output_token_ids"] for r in run["requests"]],trace=trace,drafts=drafts,
++                audits=audits,cache=cache,released=released,physical_block_map=physical_blocks,
++                cleanup=run["summary"]["cleanup"])
++
++
++def correctness(engine,args,result,save):
++    runner = engine.model_runner
++    cases = [(1,[255]*4,[12]*4),(1,[256]*4,[12]*4),(1,[257]*4,[12]*4),
++             (1,[768]*4,[12]*4),(2,[255]*8,[12]*8),
++             (2,[255,256,257,255],[12,20,8,16]),(4,[255]*16,[12]*16),
++             (4,[255,256,257,768]*2,[8,16,12,20]*2)]
++    if args.pilot:
++        cases = cases[:1]
++    for concurrency,lengths,limits in cases:
++        def requests():
++            stream = engine.tokenizer.encode("A careful experiment preserves every committed state transition. "*200,
++                                              add_special_tokens=False)
++            return [frozen.Request(i,stream[:length],limit) for i,(length,limit) in enumerate(zip(lengths,limits))]
++        reference = audit_run(engine,requests(),concurrency,"eager")
++        actual = audit_run(engine,requests(),concurrency,"second8")
++        flags = {name:reference[name]==actual[name] for name in ("outputs","trace","drafts","audits")}
++        result["correctness"].append(dict(concurrency=concurrency,lengths=lengths,limits=limits,
++                                          checks=flags,reference=reference,actual=actual))
++        save()
++        print(json.dumps(dict(concurrency=concurrency,lengths=lengths,checks=flags)),flush=True)
++        if not all(flags.values()):
++            raise RuntimeError("Concurrent graph versus frozen path disagreement")
++    # Explicit same-state transition, asymmetric availability/key veto and eviction.
++    from benchmarks.serving.eagle3_phase44a import live_verification,verify_rollback
++    reset(engine,"second2")
++    runner.call("graph_control","audit",dict(enabled=True))
++    transitions = []
++    for context in (255,256,257):
++        entries = live_verification(engine,[context])
++        for _ in range(3):
++            transitions.append(verify_rollback(runner,entries))
++        engine.scheduler.close_all()
++    entries = live_verification(engine,[257])
++    same = []
++    for veto in (None,"missing",None,"key",None):
++        runner.call("graph_control","audit",dict(enabled=True,veto=veto))
++        same.append(verify_rollback(runner,entries))
++    if any(x!=same[0] for x in same):
++        raise RuntimeError("Synchronized fallback changed target verification")
++    engine.scheduler.close_all()
++    result["transition_cache"] = clean(engine)[1]
++    result["fallback_passed"] = True
++    # Reuse the live key, then throw in host acceptance after verification.
++    runner.call("graph_control","audit",dict(enabled=True))
++    from benchmarks.serving.eagle3_phase44a import admit
++    admit(engine,[257])
++    while engine.scheduler.waiting:
++        engine.step()
++    old = frozen.coordinator_module.accept_greedy
++
++    def intentional(*args,**kwargs):
++        raise RuntimeError("phase44b intentional acceptance exception")
++
++    frozen.coordinator_module.accept_greedy = intentional
++    try:
++        engine.step()
++        raise AssertionError("Expected injected acceptance failure")
++    except RuntimeError as exc:
++        if "phase44b intentional" not in str(exc):
++            raise
++        result["exception_cleanup"] = clean(engine)[0]
++    finally:
++        frozen.coordinator_module.accept_greedy = old
++    runner.call("graph_control","clear")
++    result["final_release"] = clean(engine)
++    result["correctness_passed"] = True
++
++
++def serving(engine,args,result,save):
++    ordinary = args.systems==["ordinary"]
++    for workload in frozen.WORKLOADS:
++        if not ordinary:
++            reset(engine,"never")
++        warm = frozen.build_requests(engine.tokenizer,workload,args.concurrency,0,warmup=True)
++        run = frozen.run_closed_loop(engine,"ordinary" if ordinary else "speculative",warm,args.concurrency)
++        result["warmups"].append(dict(workload=workload,summary=run["summary"]))
++    for repeat in range(args.repeats):
++        order = list(frozen.WORKLOADS[repeat:]+frozen.WORKLOADS[:repeat])
++        if repeat%2:
++            order.reverse()
++        for workload in order:
++            systems = list(args.systems)
++            shift = (repeat+frozen.WORKLOADS.index(workload))%len(systems)
++            systems = systems[shift:]+systems[:shift]
++            if repeat%2:
++                systems.reverse()
++            for system in systems:
++                if system in ("second2","second8") and workload not in ("long-long","mixed-output"):
++                    continue
++                if not ordinary:
++                    reset(engine,system)
++                torch.manual_seed(4200+repeat)
++                requests = frozen.build_requests(engine.tokenizer,workload,args.concurrency,repeat)
++                inputs = [dict(request_id=r.request_id,prompt=r.prompt,output_limit=r.output_limit) for r in requests]
++                run = frozen.run_closed_loop(engine,"ordinary" if ordinary else "speculative",requests,args.concurrency)
++                run.update(system=system,workload=workload,repeat=repeat,concurrency=args.concurrency,inputs=inputs)
++                if ordinary:
++                    if any(run["summary"]["cleanup"].values()):
++                        raise RuntimeError("Ordinary request cleanup failed")
++                else:
++                    _,ranks = clean(engine)
++                    run["graphs"] = ranks
++                    if any(r["dropped_events"] for r in ranks):
++                        raise RuntimeError("Graph event log overflow")
++                    for key in ("allocated","reserved"):
++                        name = f"rank0_peak_{key}"
++                        run["summary"]["memory"][name] = max(run["summary"]["memory"][name],ranks[0]["memory"][f"peak_{key}"])
++                    engine.model_runner.call("graph_control","clear")
++                    run["released"] = clean(engine)[1]
++                if run["summary"]["prefix_cache_hit_requests"]:
++                    raise RuntimeError("Prefix cache contamination")
++                name = f"{system}-c{args.concurrency}-{workload}-r{repeat}.json"
++                (args.output/name).write_text(json.dumps(run,indent=2,default=str))
++                result["trials"].append(dict(system=system,workload=workload,repeat=repeat,path=name,
++                                              summary=run["summary"]))
++                save()
++                print(json.dumps(dict(system=system,c=args.concurrency,workload=workload,repeat=repeat,
++                    tps=run["summary"]["output_tokens_per_s"])),flush=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument("--stage",choices=["correctness","serving"],required=True)
++    parser.add_argument("--output",type=Path,required=True)
++    parser.add_argument("--gate",type=Path)
++    parser.add_argument("--systems",nargs="+",default=["eager","never","second4","second2","second8"])
++    parser.add_argument("--concurrency",type=int,choices=[1,2,4],default=1)
++    parser.add_argument("--repeats",type=int,default=5)
++    parser.add_argument("--pilot",action="store_true")
++    args = parser.parse_args()
++    before = hashes()
++    if args.stage=="serving":
++        gate = json.loads(args.gate.read_text())
++        if not gate.get("correctness_passed") or not gate["normal_exit"] or gate["pilot"]:
++            raise RuntimeError("Full correctness gate required")
++        if gate["source_hashes"]!=before:
++            raise RuntimeError("Sources changed after correctness gate")
++    args.output.mkdir(parents=True,exist_ok=False)
++    result = dict(command=[sys.executable,*sys.argv],stage=args.stage,pilot=args.pilot,
++        config=CONFIG,systems=args.systems,concurrency=args.concurrency,source_hashes=before,
++        git=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
++        versions={n:importlib.metadata.version(n) for n in ("torch","flash-attn","triton","transformers")},
++        cuda=torch.version.cuda,nccl=torch.cuda.nccl.version(),
++        environment={k:os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES","NCCL_DEBUG","TORCH_DISABLE_ADDR2LINE","OMP_NUM_THREADS")},
++        gpu=subprocess.check_output(["nvidia-smi"],text=True),
++        topology=subprocess.check_output(["nvidia-smi","topo","-m"],text=True),
++        target=frozen.TARGET,draft=frozen.DRAFT,reference=frozen.REFERENCE,
++        target_revision="40c069824f4251a91eefaf281ebe4c544efd3e18",
++        draft_revision="3d13517724e81cb409ddf1d4650772ec52f1e18e",
++        correctness=[],warmups=[],trials=[],normal_exit=False)
++
++    def save():
++        (args.output/"manifest.json").write_text(json.dumps(result,indent=2,default=str))
++
++    engine = None
++    try:
++        if args.stage=="correctness":
++            from benchmarks.serving.eagle3_phase44b_audit import AuditRunner
++            import nanovllm.speculative.graph_runner as module
++            module.GraphConcurrentModelRunner = AuditRunner
++        if args.systems==["ordinary"]:
++            engine = LLM(frozen.TARGET,**CONFIG)
++        else:
++            engine = ConcurrentLLMEngine(frozen.TARGET,draft_path=frozen.DRAFT,reference_path=frozen.REFERENCE,
++                speculative_length=3,audit=False,target_graph_config=policy("second4"),**CONFIG)
++        if args.stage=="correctness":
++            correctness(engine,args,result,save)
++        else:
++            serving(engine,args,result,save)
++    except Exception:
++        result["failure"] = traceback.format_exc()
++        raise
++    finally:
++        try:
++            if engine is not None:
++                atexit.unregister(engine.exit)
++                engine.exit()
++            result["normal_exit"] = True
++        finally:
++            result["source_regression"] = before!=hashes()
++            save()
++
++
++if __name__=="__main__":
++    main()
+--- /dev/null
++++ b/benchmarks/serving/eagle3_phase44b_audit.py
+@@ -0,0 +1,98 @@
++"""GPU audit observer; never imported by production."""
++from dataclasses import replace
++import hashlib
++
++import torch
++import torch.distributed as dist
++
++from nanovllm.speculative.graph_runner import GraphConcurrentModelRunner
++from nanovllm.speculative import batched_runtime as runtime
++
++
++def byte_equal(a,b):
++    return a.shape==b.shape and a.dtype==b.dtype and torch.equal(
++        a.contiguous().view(torch.uint8),b.contiguous().view(torch.uint8))
++
++
++def sha(tensor):
++    return hashlib.sha256(tensor.contiguous().view(torch.uint8).cpu().numpy().tobytes()).hexdigest()
++
++
++class AuditRunner(GraphConcurrentModelRunner):
++    def __init__(self,*args,**kwargs):
++        self.audit_records = []
++        self.audit_states = []
++        self.audit_enabled = False
++        self.audit_veto = None
++        super().__init__(*args,**kwargs)
++
++    @torch.inference_mode()
++    def graph_control(self,operation,payload=None):
++        if operation=="audit":
++            self.audit_enabled = payload.get("enabled",True)
++            self.audit_records = []
++            self.audit_states = []
++            self.audit_veto = payload.get("veto")
++            dist.barrier(group=self.control_group)
++        elif operation=="audit_snapshot":
++            value = self.graph_cache.consensus(dict(rank=self.rank,checks=self.audit_records,states=self.audit_states))
++            dist.barrier(group=self.control_group)
++            return value
++        else:
++            return super().graph_control(operation,payload)
++
++    @torch.inference_mode()
++    def eagle3_batch(self,operation,payload):
++        if not self.audit_enabled:
++            return super().eagle3_batch(operation,payload)
++        cache = self.graph_cache
++        original = cache.forward
++        original_consensus = cache.consensus
++
++        def consensus(value):
++            if self.rank==1 and isinstance(value,dict) and "available" in value:
++                value = dict(value)
++                if self.audit_veto=="missing":
++                    value["available"] = False
++                if self.audit_veto=="key" and value["key"] is not None:
++                    value["key"] = replace(value["key"],max_k=value["key"].max_k+1)
++            return original_consensus(value)
++
++        def audited(entries,states):
++            blocks = torch.tensor(sorted({b for e in entries for b in e["blocks"]}),device=self.kv_cache.device)
++            before = self.kv_cache.index_select(2,blocks).clone()
++            eager = runtime._forward(self,entries,states,verification=True)
++            expected_kv = self.kv_cache.index_select(2,blocks).clone()
++            self.kv_cache.index_copy_(2,blocks,before)
++            actual = original(entries,states)
++            checks = dict(features=byte_equal(eager[1],actual[1]),
++                kv_pages=byte_equal(expected_kv,self.kv_cache.index_select(2,blocks)),
++                finite=actual[2],replicated=actual[3])
++            if self.rank==0:
++                checks.update(logits=byte_equal(eager[0],actual[0]),
++                              target_ids=torch.equal(eager[0].argmax(-1),actual[0].argmax(-1)))
++            flags = original_consensus(checks)
++            self.audit_records.append(checks)
++            if not all(all(row.values()) for row in flags):
++                raise RuntimeError(f"Graph integration numerical/state disagreement: {flags}")
++            return actual
++
++        cache.consensus = consensus
++        cache.forward = audited
++        try:
++            value = super().eagle3_batch(operation,payload)
++        finally:
++            cache.forward = original
++            cache.consensus = original_consensus
++        if operation in ("prefill","verify","commit","rollback"):
++            rows = []
++            for entry in payload["entries"]:
++                state = self._eagle_batch_states[entry["seq_id"]]
++                cursor = state["cursor"]
++                positions = torch.arange(cursor,device=self.kv_cache.device)
++                blocks = torch.tensor(state["blocks"],device=positions.device)
++                valid = self.kv_cache[:,:,blocks[positions//self.block_size],positions%self.block_size]
++                rows.append(dict(seq_id=entry["seq_id"],cursor=cursor,token_count=len(state["tokens"]),
++                    feature_sha=sha(state["features"]),kv_sha=sha(valid),phase=state["phase"].name))
++            self.audit_states.append(dict(operation=operation,rows=rows))
++        return value
+--- /dev/null
++++ b/benchmarks/serving/eagle3_phase44b_summary.py
+@@ -0,0 +1,449 @@
++"""Offline full-matrix analysis; retains every Phase 4.4B trial."""
++import argparse
++from collections import Counter, defaultdict
++import csv
++import json
++import math
++from pathlib import Path
++import re
++import statistics
++
++from benchmarks.serving.eagle3_phase42 import distribution,WORKLOADS
++
++
++def load(path):
++    return json.loads(path.read_text())
++
++
++def graph_metrics(run):
++    if "graphs" not in run:
++        return None
++    rank = run["graphs"][0]
++    events = [e for e in rank["events"] if e["kind"]=="verify"]
++    # The post-release snapshot supplies clear/eviction metadata for every
++    # lifetime; timed events still come from the pre-clear serving snapshot.
++    captures = run["released"][0]["lifetimes"]
++    if run["system"]=="eager":
++        assert not events and not captures
++        return None
++    steps = [s for s in run["steps"] if not s["is_prefill"]]
++    assert len(events)==len(steps)
++    keys = defaultdict(list)
++    request_keys = defaultdict(set)
++    reasons = Counter()
++    clipped = Counter()
++    fallback_causes = Counter()
++    observed = set()
++    captured = set()
++    non_context_shapes = set()
++    table_shapes = set()
++    new_context_only = new_table_width = 0
++    capture_count = 0
++    for event,step in zip(events,steps):
++        event["endpoint_ns"] = step["target_verify_ns"]
++        reasons[event["reason"]] += 1
++        for reason in set(step["clipping_reasons"]):
++            if reason:
++                clipped[reason] += 1
++        if event["key"] is not None:
++            key = event["key"]
++            without_context = json.dumps({k:v for k,v in key.items() if k!="max_k"},sort_keys=True)
++            without_table = json.dumps({k:v for k,v in key.items() if k not in ("max_k","table_width")},sort_keys=True)
++            if event["key_id"] not in observed:
++                new_context_only += without_context in non_context_shapes
++                new_table_width += (without_context not in non_context_shapes and without_table in table_shapes)
++            non_context_shapes.add(without_context)
++            table_shapes.add(without_table)
++            if event["action"]!="replay":
++                if event["key_id"] in captured:
++                    fallback_causes["previously_captured_now_absent"] += 1
++                elif event["key_id"] not in observed:
++                    fallback_causes["first_exact_key_occurrence"] += 1
++                elif capture_count>=rank["config"]["max_captures"]:
++                    fallback_causes["capture_budget_exhausted"] += 1
++                elif event["action"]=="capture":
++                    fallback_causes["capture_call_returns_eager"] += 1
++                else:
++                    fallback_causes["policy_or_consensus_miss"] += 1
++            observed.add(event["key_id"])
++            keys[event["key_id"]].append(event)
++            for seq_id in event["seq_ids"]:
++                request_keys[seq_id].add(event["key_id"])
++        elif any(step["clipping_reasons"]):
++            fallback_causes["clipped_q"] += 1
++        else:
++            fallback_causes["unsupported_batch_or_shape"] += 1
++        if event["action"]=="capture":
++            capture_count += 1
++            captured.add(event["key_id"])
++    lifetimes = []
++    for entry in captures:
++        seen = keys[entry["key_id"]]
++        eager = [e["endpoint_ns"] for e in seen if e["action"]=="eager"]
++        hits = [e["endpoint_ns"] for e in seen if e["action"]=="replay"]
++        saved = statistics.mean(eager)-statistics.mean(hits) if eager and hits else None
++        z = entry["replay_count"]
++        cost = entry["capture_ns"]
++        if z==0:
++            verdict = "never_reused_unprofitable"
++        elif saved is None:
++            verdict = "unidentified"
++        else:
++            verdict = "profitable" if saved>0 and z*saved>=cost else "unprofitable"
++        lifetimes.append(dict(key_id=entry["key_id"],key=entry["key"],entry_id=entry["entry_id"],
++            capture_ms=cost/1e6,replays=z,per_hit_saved_ms=None if saved is None else saved/1e6,
++            break_even_replays=math.ceil(cost/saved) if saved is not None and saved>0 else None,
++            verdict=verdict,allocated_delta=entry["allocated_delta"],reserved_delta=entry["reserved_delta"],
++            capture_peak=entry["capture_peak"],created_step=entry["created_step"],last_used=entry["last_used"],
++            release_reason=entry.get("release_reason"),released_step=entry.get("released_step"),
++            release_ms=entry.get("release_ns",0)/1e6,
++            eager_endpoint_ms=statistics.mean(eager)/1e6 if eager else None,
++            hit_endpoint_ms=statistics.mean(hits)/1e6 if hits else None,
++            matched_hit_speedup=statistics.mean(eager)/statistics.mean(hits) if eager and hits else None))
++    eligible = sum(e["key"] is not None for e in events)
++    hits = sum(e["action"]=="replay" for e in events)
++    captured_key_verdicts = Counter()
++    for key_id in captured:
++        entries = [e for e in lifetimes if e["key_id"]==key_id]
++        z = sum(e["replays"] for e in entries)
++        cost = sum(e["capture_ms"] for e in entries)
++        saving = entries[0]["per_hit_saved_ms"]
++        verdict = ("never_reused_unprofitable" if not z else "unidentified" if saving is None
++                   else "profitable" if saving>0 and saving*z>=cost else "unprofitable")
++        captured_key_verdicts[verdict] += 1
++    release = [e for e in rank["events"] if e["kind"]=="release"]
++    graph_wall = sum(e["capture_ns"] for e in events)+sum(e["duration_ns"] for e in release)
++    hit_steps = [s for e,s in zip(events,steps) if e["action"]=="replay"]
++    return dict(verifications=len(events),eligible=eligible,ineligible=len(events)-eligible,
++        hits=hits,misses=eligible-hits,eager_fallback=len(events)-hits,captures=len(captures),
++        evictions=sum(e["reason"]=="eviction" for e in release),
++        eligible_rate=eligible/len(events) if events else None,
++        hit_rate=hits/len(events) if events else None,eligible_hit_rate=hits/eligible if eligible else None,
++        eligible_miss_rate=(eligible-hits)/eligible if eligible else None,
++        eager_fallback_rate=(len(events)-hits)/len(events) if events else None,
++        unique_keys=len(keys),unique_keys_per_request=distribution(
++            len(request_keys[r["sequence_id"]]) for r in run["requests"]),
++        occurrences_per_key=distribution(len(rows) for rows in keys.values()),
++        unique_max_k=distribution(rows[0]["key"]["max_k"] for rows in keys.values()),
++        verification_rows=dict(Counter(e["key"]["rows"] for e in events if e["key"])),
++        block_table_widths=dict(Counter(e["key"]["table_width"] for e in events if e["key"])),
++        reasons=dict(reasons),clipping_reasons=dict(clipped),fallback_causes=dict(fallback_causes),
++        new_key_context_only=new_context_only,new_key_table_width=new_table_width,
++        captured_unique_keys=len(captured),
++        ragged_q=sum(len(set(e["q_lengths"]))>1 for e in events),
++        unseen_context_key=sum(e["key"] is not None and e["occurrence"]==1 for e in events),
++        unsupported_uniform_batch=sum(e["key"] is None and all(q==4 for q in e["q_lengths"]) for e in events),
++        capture_ms=sum(e["capture_ns"] for e in events)/1e6,
++        eviction_ms=sum(e["duration_ns"] for e in release)/1e6,
++        agreement_ms=sum(e["agreement_ns"] for e in events)/1e6,
++        replay_ms=sum(e["replay_ns"] for e in events)/1e6,
++        eager_forward_ms=sum(e["eager_ns"] for e in events)/1e6,
++        graph_management_fraction=graph_wall/(run["summary"]["duration_s"]*1e9),
++        replays_per_capture=hits/len(captures) if captures else None,
++        replays_per_captured_unique_key=hits/len(captured) if captured else None,
++        capture_to_replay=len(captures)/hits if hits else None,
++        replay_distribution=distribution(e["replay_count"] for e in captures),
++        lifetime_verdicts=dict(Counter(e["verdict"] for e in lifetimes)),lifetimes=lifetimes,
++        captured_key_verdicts=dict(captured_key_verdicts),
++        hit_endpoint_ms=distribution(e["endpoint_ns"]/1e6 for e in events if e["action"]=="replay"),
++        hit_step_ns=sum(s["step_ns"] for s in hit_steps),
++        hit_step_draft_ns=sum(s["draft_ns"] for s in hit_steps),
++        hit_step_verify_ns=sum(s["target_verify_ns"] for s in hit_steps),
++        peak_live_bytes=rank["peak_live_bytes"],peak_live_reserved=rank["peak_live_reserved"],
++        memory_before_release=[r["memory"] for r in run["graphs"]],
++        memory_after_release=[r["memory"] for r in run["released"]])
++
++
++def aggregate(runs):
++    duration = sum(r["summary"]["duration_s"] for r in runs)
++    requests = [q for r in runs for q in r["requests"]]
++    wall = {k:sum(r["summary"]["wall_clock"].get(k,0) for r in runs)
++            for k in runs[0]["summary"]["wall_clock"] if k.endswith("_ns")}
++    graph = [r["graph_metrics"] for r in runs if r["graph_metrics"] is not None]
++    result = dict(trials=len(runs),duration_s=duration,requests=len(requests),
++        tokens=sum(r["summary"]["output_tokens"] for r in runs),
++        output_tokens_per_s=sum(r["summary"]["output_tokens"] for r in runs)/duration,
++        requests_per_s=len(requests)/duration,
++        latency={k:distribution(q[k] for q in requests) for k in ("ttft_ms","e2e_ms","tpot_ms")},
++        wall_clock_ns=wall,wall_clock_fraction={k:v/1e9/duration for k,v in wall.items()},
++        memory_peak_allocated=max(r["summary"]["memory"]["rank0_peak_allocated"] for r in runs),
++        memory_peak_reserved=max(r["summary"]["memory"]["rank0_peak_reserved"] for r in runs))
++    steps = [s for r in runs for s in r["steps"]]
++    spec = {k:sum(r["summary"]["speculation"][k] for r in runs) for k in (
++        "proposed_tokens","accepted_tokens","committed_decode_tokens","verifications",
++        "target_forwards","draft_forwards","draft_tokens_processed")}
++    for name,denominator in (("acceptance_rate","proposed_tokens"),("accepted_per_verification","verifications")):
++        spec[name] = spec["accepted_tokens"]/spec[denominator] if spec[denominator] else None
++    spec["effective_outputs_per_verification"] = (
++        spec["committed_decode_tokens"]/spec["verifications"] if spec["verifications"] else None)
++    captures = sum(g["captures"] for g in graph)
++    spec.update(target_serving_forward_calls=len(steps),
++                target_prefill_calls=sum(s["is_prefill"] for s in steps),
++                target_extra_warmup_forwards=3*captures,
++                target_capture_recordings=captures,
++                target_executed_forward_calls=len(steps)+3*captures)
++    result["speculation"] = spec
++    result["scheduler"] = dict(
++        batch_size=distribution(s["batch_size"] for s in steps if not s["is_prefill"]),
++        target_query_tokens=distribution(s.get("target_query_tokens",0) for s in steps if not s["is_prefill"]),
++        max_used_blocks=max(s["used_blocks_after"] for s in steps),
++        peak_tentative_blocks=max(s.get("peak_tentative_blocks",0) for s in steps),
++        capacity_blocks=sorted({r["summary"]["memory"]["kv_capacity_blocks"] for r in runs}))
++    result["latency"]["itl_ms"] = distribution(t for q in requests for t in q["itl_ms"])
++    if graph:
++        totals = {k:sum(g[k] for g in graph) for k in ("verifications","eligible","ineligible","hits","misses",
++            "eager_fallback","captures","evictions","unique_keys","capture_ms","eviction_ms","agreement_ms","replay_ms",
++            "ragged_q","unseen_context_key","unsupported_uniform_batch","new_key_context_only",
++            "new_key_table_width","captured_unique_keys","eager_forward_ms",
++            "hit_step_ns","hit_step_draft_ns","hit_step_verify_ns")}
++        totals.update(hit_rate=totals["hits"]/totals["verifications"],
++            eligible_rate=totals["eligible"]/totals["verifications"],
++            eligible_hit_rate=totals["hits"]/totals["eligible"] if totals["eligible"] else None,
++            eligible_miss_rate=totals["misses"]/totals["eligible"] if totals["eligible"] else None,
++            eager_fallback_rate=totals["eager_fallback"]/totals["verifications"],
++            replays_per_capture=totals["hits"]/totals["captures"] if totals["captures"] else None,
++            graph_management_fraction=(totals["capture_ms"]+totals["eviction_ms"])/1e3/duration,
++            replay_distribution=distribution(e["replays"] for g in graph for e in g["lifetimes"]),
++            lifetime_verdicts=dict(sum((Counter(g["lifetime_verdicts"]) for g in graph),Counter())),
++            captured_key_verdicts=dict(sum((Counter(g["captured_key_verdicts"]) for g in graph),Counter())),
++            peak_live_bytes=max(g["peak_live_bytes"] for g in graph),
++            peak_live_reserved_proxy=max(g["peak_live_reserved"] for g in graph),
++            unique_keys_per_trial=distribution(g["unique_keys"] for g in graph),
++            capture_to_replay=totals["captures"]/totals["hits"] if totals["hits"] else None,
++            cache_churn=totals["evictions"]/totals["captures"] if totals["captures"] else None,
++            capture_distribution_ms=distribution(e["capture_ms"] for g in graph for e in g["lifetimes"]),
++            matched_hit_speedup=distribution(e["matched_hit_speedup"] for g in graph for e in g["lifetimes"] if e["replays"]),
++            fallback_causes=dict(sum((Counter(g["fallback_causes"]) for g in graph),Counter())),
++            verification_rows=dict(sum((Counter(g["verification_rows"]) for g in graph),Counter())),
++            block_table_widths=dict(sum((Counter(g["block_table_widths"]) for g in graph),Counter())),
++            clipping_reasons=dict(sum((Counter(g["clipping_reasons"]) for g in graph),Counter())))
++        totals["replays_per_captured_unique_key"] = totals["hits"]/totals["captured_unique_keys"] if totals["captured_unique_keys"] else None
++        totals["hit_step_draft_fraction"] = totals["hit_step_draft_ns"]/totals["hit_step_ns"] if totals["hit_step_ns"] else None
++        totals["hit_step_verify_fraction"] = totals["hit_step_verify_ns"]/totals["hit_step_ns"] if totals["hit_step_ns"] else None
++        matched = [e for g in graph for e in g["lifetimes"] if e["replays"] and e["matched_hit_speedup"] is not None]
++        eager_ms = sum(e["eager_endpoint_ms"]*e["replays"] for e in matched)
++        hit_ms = sum(e["hit_endpoint_ms"]*e["replays"] for e in matched)
++        hit_count = sum(e["replays"] for e in matched)
++        totals["matched_hit_target_speedup"] = eager_ms/hit_ms if hit_ms else None
++        totals["matched_hit_eager_endpoint_ms"] = eager_ms/hit_count if hit_count else None
++        totals["matched_hit_graph_endpoint_ms"] = hit_ms/hit_count if hit_count else None
++        result["graph"] = totals
++    # Nested timers are not additive: catch-up is inside draft; cache work is
++    # inside target verification. Form an explicit non-overlapping partition.
++    partition = {k:wall[k] for k in ("schedule_ns","draft_ns","reserve_ns","target_prefill_ns",
++                 "target_run_ns","accept_commit_ns","sync_other_ns","driver_refill_ns")}
++    partition["prefill_control_and_postprocess_ns"] = sum(
++        s.get("target_control_rpc_ns",0)+s.get("postprocess_ns",0) for s in steps if s["is_prefill"])
++    if runs[0]["system"]=="ordinary":
++        partition["ordinary_decode_postprocess_ns"] = sum(s.get("postprocess_ns",0) for s in steps if not s["is_prefill"])
++    if graph:
++        for label,field in (("capture_ns","capture_ms"),("eviction_ns","eviction_ms"),
++                            ("graph_agreement_ns","agreement_ms"),("target_replay_forward_ns","replay_ms"),
++                            ("target_eager_forward_ns","eager_forward_ms")):
++            partition[label] = sum(g[field]*1e6 for g in graph)
++        partition["verify_endpoint_other_ns"] = wall["target_verify_ns"]-sum(partition[k] for k in (
++            "capture_ns","eviction_ns","graph_agreement_ns","target_replay_forward_ns","target_eager_forward_ns"))
++        assert partition["verify_endpoint_other_ns"]>=0
++    else:
++        partition["target_verify_ns"] = wall["target_verify_ns"]
++    assert abs(sum(partition.values())-duration*1e9)<100, "Wall breakdown must reconcile"
++    result["wall_partition_ns"] = partition
++    result["wall_partition_fraction"] = {k:v/1e9/duration for k,v in partition.items()}
++    return result
++
++
++def main():
++    parser = argparse.ArgumentParser(__doc__)
++    parser.add_argument("--raw",type=Path,required=True)
++    parser.add_argument("--output",type=Path,required=True)
++    args = parser.parse_args()
++    args.output.mkdir(parents=True,exist_ok=True)
++    runs = []
++    manifests = []
++    for path in sorted(args.raw.glob("run-*/manifest.json")):
++        manifest = load(path)
++        assert manifest["normal_exit"] and not manifest["source_regression"]
++        manifests.append(dict(path=str(path),command=manifest["command"],versions=manifest["versions"],
++                              config=manifest["config"],source_hashes=manifest["source_hashes"]))
++        for trial in manifest["trials"]:
++            run = load(path.parent/trial["path"])
++            run["raw"] = str(path.parent/trial["path"])
++            assert not any(run["summary"]["cleanup"].values())
++            assert not run["summary"]["prefix_cache_hit_requests"]
++            if "released" in run:
++                assert all(r["live_entries"]==r["target_states"]==r["dropped_events"]==0 for r in run["released"])
++            run["graph_metrics"] = graph_metrics(run)
++            runs.append(run)
++    assert len(runs)==420, f"Need complete preregistered matrix: {len(runs)}/420"
++    result = dict(trials=len(runs),outliers_removed=0,manifests=manifests,cells=[],rollups=[],comparisons=[],
++                  correctness=load(args.raw/"correctness-final/manifest.json"))
++    gate = result["correctness"]
++    result["correctness"] = {k:gate[k] for k in ("correctness_passed","normal_exit","source_regression","fallback_passed","exception_cleanup")}
++    cases = []
++    for case in gate["correctness"]:
++        current = case["actual"]
++        rank_signature = lambda audit: [(s["operation"],[(r["seq_id"],r["cursor"],r["token_count"],
++            r["feature_sha"],r["phase"]) for r in s["rows"]]) for s in audit["states"]]
++        assert rank_signature(current["audits"][0])==rank_signature(current["audits"][1])
++        cases.append(dict(concurrency=case["concurrency"],lengths=case["lengths"],limits=case["limits"],
++            checks=case["checks"],request_pairs=len(current["outputs"]),
++            rank_comparisons=sum(len(a["checks"]) for a in current["audits"]),
++            actions=dict(Counter(e["action"] for e in current["cache"][0]["events"] if e["kind"]=="verify"))))
++    result["correctness"].update(cases=cases,committed_feature_rank_replication=True,
++        request_pairs=sum(c["request_pairs"] for c in cases),rank_comparisons=sum(c["rank_comparisons"] for c in cases))
++    flat,lifetimes = [],[]
++    for run in runs:
++        flat.append(dict(system=run["system"],concurrency=run["concurrency"],workload=run["workload"],repeat=run["repeat"],
++            raw=run["raw"],duration_s=run["summary"]["duration_s"],output_tps=run["summary"]["output_tokens_per_s"],
++            graph=run["graph_metrics"]))
++        if run["graph_metrics"]:
++            lifetimes.extend(dict(system=run["system"],concurrency=run["concurrency"],workload=run["workload"],
++                repeat=run["repeat"],**entry) for entry in run["graph_metrics"]["lifetimes"])
++    for system in ("ordinary","eager","never","second4","second2","second8"):
++        for concurrency in (1,2,4):
++            selected = [r for r in runs if r["system"]==system and r["concurrency"]==concurrency]
++            result["rollups"].append(dict(system=system,concurrency=concurrency,**aggregate(selected)))
++            for workload in WORKLOADS:
++                cell = [r for r in selected if r["workload"]==workload]
++                if cell:
++                    assert len(cell)==5
++                    result["cells"].append(dict(system=system,concurrency=concurrency,workload=workload,**aggregate(cell)))
++    equality = Counter()
++    for concurrency in (1,2,4):
++        for workload in WORKLOADS:
++            peers = {r["system"]:[x for x in runs if x["system"]==r["system"] and x["concurrency"]==concurrency
++                     and x["workload"]==workload] for r in runs if r["concurrency"]==concurrency and r["workload"]==workload}
++            for system in ("never","second4","second2","second8"):
++                if system not in peers:
++                    continue
++                speeds = {base:[] for base in ("ordinary","eager")}
++                for current in peers[system]:
++                    for base in speeds:
++                        reference = next(r for r in peers[base] if r["repeat"]==current["repeat"])
++                        assert current["inputs"]==reference["inputs"]
++                        equal = [a["output_token_ids"]==b["output_token_ids"] for a,b in zip(current["requests"],reference["requests"])]
++                        equality[f"{system}_vs_{base}_pairs"] += len(equal)
++                        equality[f"{system}_vs_{base}_equal"] += sum(equal)
++                        if base=="eager" and not all(equal):
++                            raise RuntimeError("Graph serving output differs from eager")
++                        if base=="eager":
++                            fields = ("is_prefill","batch_size","context_lengths","scheduled_tokens",
++                                      "target_query_tokens","proposed_tokens","accepted_tokens",
++                                      "committed_decode_tokens","clipping_reasons")
++                            signature = lambda run: [tuple(s.get(k) for k in fields) for s in run["steps"]]
++                            if signature(current)!=signature(reference):
++                                raise RuntimeError("Graph serving schedule/acceptance structure differs from eager")
++                            equality[f"{system}_vs_eager_step_structure_equal_trials"] += 1
++                        speeds[base].append(reference["summary"]["duration_s"]/current["summary"]["duration_s"])
++                result["comparisons"].append(dict(system=system,concurrency=concurrency,workload=workload,
++                    paired_speedups=speeds,paired_distribution={k:distribution(v) for k,v in speeds.items()},
++                    aggregate_speedup={base:sum(r["summary"]["duration_s"] for r in peers[base])/
++                        sum(r["summary"]["duration_s"] for r in peers[system]) for base in speeds}))
++    result["output_parity"] = dict(equality)
++    controls = []
++    for c in (1,2,4):
++        path = args.raw/f"frozen-eager-c{c}.json"
++        data = load(path)
++        assert data["normal_exit"] and len(data["trials"])==30
++        assert not any(data["final_cleanup"].values())
++        for trial in data["trials"]:
++            assert not any(trial["summary"]["cleanup"].values())
++            assert not trial["summary"]["prefix_cache_hit_requests"]
++            trial.update(system="default_eager",concurrency=c,graph_metrics=None)
++            peer = next(r for r in runs if r["system"]=="eager" and r["concurrency"]==c
++                        and r["workload"]==trial["workload"] and r["repeat"]==trial["repeat"])
++            assert [r["output_token_ids"] for r in trial["requests"]]==[r["output_token_ids"] for r in peer["requests"]]
++            controls.append(trial)
++    result["default_runner_control"] = dict(trials=len(controls),output_parity=True,cells=[],rollups=[])
++    for c in (1,2,4):
++        selected = [r for r in controls if r["concurrency"]==c]
++        result["default_runner_control"]["rollups"].append(dict(concurrency=c,**aggregate(selected)))
++        for workload in WORKLOADS:
++            current = [r for r in selected if r["workload"]==workload]
++            default_time = sum(r["summary"]["duration_s"] for r in current)
++            peers = {s:sum(r["summary"]["duration_s"] for r in runs if r["concurrency"]==c
++                          and r["workload"]==workload and r["system"]==s) for s in ("eager","second4")}
++            result["default_runner_control"]["cells"].append(dict(concurrency=c,workload=workload,
++                graph_over_default_speedup=default_time/peers["second4"],
++                disabled_over_default_speedup=default_time/peers["eager"],**aggregate(current)))
++    result["total_measured_trials_including_controls"] = len(runs)+len(controls)
++    result["cpu_regression"] = {}
++    for name in ("post-focused","post-cpu"):
++        log = args.raw/f"{name}.log"
++        value = log.read_text()
++        count = int(re.search(r"Ran (\d+) tests",value).group(1))
++        passed = value.rstrip().endswith("\nOK")
++        assert passed, f"CPU regression failed: {log}"
++        result["cpu_regression"][name] = dict(tests=count,passed=passed,log=str(log))
++    primary = [c for c in result["comparisons"] if c["system"]=="second4"]
++    result["status"] = "complete; opt-in integration correct, cold exact-key capture not beneficial in tested cells"
++    result["decision"] = dict(keep_eager_default=True,graph_remains_opt_in=True,
++        primary_cells_with_aggregate_graph_over_eager_gain=sum(c["aggregate_speedup"]["eager"]>1 for c in primary),
++        primary_paired_trials_with_graph_over_eager_gain=sum(v>1 for c in primary for v in c["paired_speedups"]["eager"]),
++        draft_batching_supported_by_this_evidence=False,
++        next_phase_started=False,git_commit_made=False,
++        followup="Approval required: longer-horizon exact-key reuse, then an independent padded/bucketed-graph safety design if warranted")
++    result["lifetime_amortization"] = lifetimes
++    result["trial_table"] = flat
++    result["metric_contract"] = dict(
++        throughput="committed tokens / serving wall time, never sum(request E2E)",
++        percentiles="pooled requests for TTFT/E2E/TPOT; pooled committed-token intervals for ITL",
++        cache_hit_rate="replays / all verification batches; eligible_hit_rate has eligible denominator",
++        key_counts="per-trial unique keys summed across trials, not global de-duplicated identities",
++        capture_amortization="same-key noncapture eager versus replay endpoint means; observational estimate",
++        memory="allocated deltas include first-use engine workspace; reserved deltas are allocator proxies, not ownership",
++        partition="disjoint rank-0 host wall endpoints; not isolated GPU kernel time; draft catch-up is nested",
++        graph_cold_start="cache, occurrence history and capture allowance reset each measured trial",
++        eager_baseline="same-process opt-in runner with GraphCache disabled; frozen eager arithmetic and transactions")
++    result["metric_contract"]["target_forwards"] = (
++        "legacy Phase4.2 target_forwards excludes speculative prefill; explicit serving/executed counts add prefill "
++        "and three capture warmups. Capture recordings are separate, not additional executed GPU forwards.")
++    result["metric_contract"]["rank1_peak"] = (
++        "rank0 peak is trial-local; the frozen collector resets only rank0 allocator counters. "
++        "Rank1 peak snapshots can include earlier trials; report process maxima and instantaneous/release values, "
++        "not purported isolated per-trial rank1 peaks.")
++    (args.output/"summary.json").write_text(json.dumps(result,indent=2))
++    with (args.output/"trials.csv").open("w") as file:
++        rows = [{k:v for k,v in r.items() if k!="graph"} for r in flat]
++        writer = csv.DictWriter(file,fieldnames=list(rows[0]))
++        writer.writeheader()
++        writer.writerows(rows)
++    with (args.output/"capture-lifetimes.csv").open("w") as file:
++        rows = [{k:v for k,v in entry.items() if k not in ("key","capture_peak")} for entry in lifetimes]
++        writer = csv.DictWriter(file,fieldnames=list(rows[0]))
++        writer.writeheader()
++        writer.writerows(rows)
++    cells = {(r["system"],r["concurrency"],r["workload"]):r for r in result["cells"]}
++    lines = ["# Serving Throughput", "", "Five measured repeats per cell; all capture/eviction costs included.", "",
++             "| c | Workload | Ordinary tok/s | Eager EAGLE | Never | Graph-4 | Graph/eager | Graph/ordinary |",
++             "|---|---|---:|---:|---:|---:|---:|---:|"]
++    for c in (1,2,4):
++        for workload in WORKLOADS:
++            t = {s:cells[s,c,workload]["output_tokens_per_s"] for s in ("ordinary","eager","never","second4")}
++            lines.append(f"| {c} | {workload} | {t['ordinary']:.2f} | {t['eager']:.2f} | {t['never']:.2f} | "
++                         f"{t['second4']:.2f} | {t['second4']/t['eager']:.3f}x | {t['second4']/t['ordinary']:.3f}x |")
++    (args.output/"throughput-table.md").write_text("\n".join(lines)+"\n")
++    lines = ["# Request and Token Latencies", "", "All values in milliseconds: P50 / P95 / P99. No outlier removal.", "",
++             "| System | c | Workload | TTFT | TPOT | ITL | E2E |", "|---|---|---|---:|---:|---:|---:|"]
++    for row in result["cells"]:
++        values = [" / ".join(f"{row['latency'][k][p]:.2f}" for p in ("p50","p95","p99"))
++                  for k in ("ttft_ms","tpot_ms","itl_ms","e2e_ms")]
++        lines.append(f"| {row['system']} | {row['concurrency']} | {row['workload']} | "+" | ".join(values)+" |")
++    (args.output/"latency-table.md").write_text("\n".join(lines)+"\n")
++    lines = ["# Exact-Key Cache", "", "Hit rate denominator is all verification batches, not just eligible batches.", "",
++             "| System | c | Workload | Eligible | Hit | Unique keys/trial mean | Captures | Replays | Evictions | Capture ms |",
++             "|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
++    for row in result["cells"]:
++        if "graph" not in row:
++            continue
++        g = row["graph"]
++        lines.append(f"| {row['system']} | {row['concurrency']} | {row['workload']} | {g['eligible_rate']:.1%} | "
++                     f"{g['hit_rate']:.1%} | {g['unique_keys_per_trial']['mean']:.1f} | {g['captures']} | "
++                     f"{g['hits']} | {g['evictions']} | {g['capture_ms']:.1f} |")
++    (args.output/"cache-table.md").write_text("\n".join(lines)+"\n")
++    for row in result["rollups"]:
++        print(row["system"],row["concurrency"],round(row["output_tokens_per_s"],3),row.get("graph",{}).get("hit_rate"))
++
++
++if __name__=="__main__":
++    main()
+--- /dev/null
++++ b/tests/test_eagle3_graph_cache.py
+@@ -0,0 +1,81 @@
++from dataclasses import asdict
++import unittest
++
++from nanovllm.speculative.graph_policy import BoundedPolicy, GraphCacheConfig, agree, make_key
++from benchmarks.serving.eagle3_graph_key import make_key as prototype_key
++
++
++class GraphCachePolicyTests(unittest.TestCase):
++    def key(self, batch=1, context=255, q=4):
++        layout = dict(cu_seqlens_q=[i*q for i in range(batch+1)],
++                      context_lens=[context]*batch,block_tables=[[1,2]]*batch)
++        kwargs = dict(block_size=256,model_identity="frozen",dtype="bf16",
++                      device_class="sm89",tp_size=2,training=True,feature_layers=(2,20,37))
++        key = make_key(layout,**kwargs)
++        old = prototype_key(layout,**kwargs)
++        self.assertEqual(asdict(key) if key else None,asdict(old) if old else None)
++        return key
++
++    def test_exact_frozen_key_contract(self):
++        for batch in (1,2,4):
++            for context in (255,256,257,1024):
++                self.key(batch,context)
++        self.assertIsNone(self.key(3))
++        self.assertIsNone(self.key(2,q=3))
++
++    def test_second_occurrence_and_never(self):
++        for policy in ("never","second"):
++            p = BoundedPolicy(GraphCacheConfig(capture_policy=policy))
++            key = self.key()
++            p.observe(key)
++            self.assertFalse(p.should_capture(key))
++            p.observe(key)
++            self.assertEqual(p.should_capture(key),policy=="second")
++
++    def test_lru_capacity_and_capture_cap(self):
++        p = BoundedPolicy(GraphCacheConfig(max_graph_entries=2,max_captures=2))
++        keys = [self.key(context=x) for x in (255,256,257)]
++        for key in keys[:2]:
++            p.observe(key)
++            p.observe(key)
++            p.insert(key)
++        p.touch(keys[0])
++        self.assertEqual(p.victim(),keys[1])
++        p.observe(keys[2])
++        p.observe(keys[2])
++        self.assertFalse(p.should_capture(keys[2]))
++        with self.assertRaises(RuntimeError):
++            p.insert(keys[2])
++
++    def test_observation_metadata_bounded(self):
++        p = BoundedPolicy(GraphCacheConfig(max_observed_keys=2))
++        for context in range(10):
++            p.observe(self.key(context=context))
++        self.assertEqual(len(p.seen),2)
++
++    def plan(self, **changes):
++        return dict(key=self.key(),layout_digest="same",epoch=1,policy="second",
++                    registry=[],available=False,capture=False,error=None)|changes
++
++    def test_symmetric_miss_capture_hit(self):
++        self.assertEqual(agree([self.plan()]*2),("eager","miss"))
++        self.assertEqual(agree([self.plan(capture=True)]*2),("capture","second_occurrence"))
++        self.assertEqual(agree([self.plan(available=True)]*2),("replay","hit"))
++
++    def test_key_mismatch_or_rank_miss_is_eager(self):
++        self.assertEqual(agree([self.plan(),self.plan(key=self.key(context=256))])[0],"eager")
++        self.assertEqual(agree([self.plan(available=True),self.plan()]),("eager","rank_missing_key"))
++
++    def test_unsafe_layout_generation_or_policy_fails_closed(self):
++        for change in (dict(layout_digest="different"),dict(epoch=2),dict(policy="never"),dict(error="bad")):
++            with self.assertRaises(RuntimeError):
++                agree([self.plan(),self.plan(**change)])
++
++    def test_invalid_bounds(self):
++        for config in (dict(max_graph_entries=0),dict(capture_policy="first"),dict(max_captures=-1)):
++            with self.assertRaises(ValueError):
++                GraphCacheConfig(**config)
++
++
++if __name__=="__main__":
++    unittest.main()

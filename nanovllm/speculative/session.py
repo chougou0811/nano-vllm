@@ -8,6 +8,7 @@ from nanovllm.sampling_params import SamplingParams
 from .acceptance import accept_greedy
 from .draft import ReferenceDraft
 from .draft_state import DraftState
+from .controller import AdaptiveK
 
 
 def check_ranks(rows):
@@ -17,7 +18,8 @@ def check_ranks(rows):
 
 def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,audit,
              proposal_override=None,eos_override=None,reference_probe=None,
-             draft_state_mode="full_rebuild",state_probe=None):
+             draft_state_mode="full_rebuild",state_probe=None,adaptive_k=False,k_controller=None,
+             adaptive_prior=None):
     runner = engine.model_runner
     if not runner.enforce_eager:
         raise ValueError("Phase 1 requires eager execution")
@@ -26,6 +28,16 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
         raise ValueError("EAGLE Phase 1 requires an idle engine and exclusive KV lease")
     tokens = engine.tokenizer.encode(prompt) if isinstance(prompt,str) else list(prompt)
     cfg = runner.config
+    if adaptive_k and (k < 1 or draft_state_mode != "persistent" or k_controller is not None):
+        raise ValueError("Adaptive K requires persistent state, K>0 and a private controller")
+    controller = AdaptiveK() if adaptive_k else k_controller
+    if adaptive_prior is not None:
+        if not adaptive_k:
+            raise ValueError("A calibration prior requires adaptive_k=True")
+        from .prior_controller import PriorAdaptiveK
+        controller = PriorAdaptiveK(adaptive_prior)
+    if controller is not None and k < 1:
+        raise ValueError("K controller requires an enabled draft")
     if not tokens or max_tokens < 1 or k < 0 or len(tokens)+max_tokens > cfg.max_model_len:
         raise ValueError("Invalid prompt/output/K/context lengths")
     if any(not isinstance(t,int) or t < 0 or t >= cfg.hf_config.vocab_size for t in tokens):
@@ -61,7 +73,13 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
         token_times.append(perf_counter_ns())
         while seq.num_completion_tokens < max_tokens and seq.last_token != eos:
             remaining = max_tokens-seq.num_completion_tokens
-            count = min(k,remaining-1)
+            context_length = runner._eagle_state["cached"]
+            select_start = perf_counter_ns()
+            requested_k = controller.select(context_length,remaining) if controller is not None else k
+            if controller is not None and (type(requested_k) is not int or requested_k not in range(1,7)):
+                raise ValueError("Controller must choose integer K in [1,6]")
+            count = min(requested_k,remaining-1)
+            selection_ns = perf_counter_ns()-select_start
             proposals = []
             p_start = perf_counter_ns()
             if count:
@@ -93,13 +111,25 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
                 seq.append_token(token)
             now = perf_counter_ns()
             token_times.extend([now]*len(result.tokens))
+            conditioning_ns = draft_state.last_metrics["conditioning_ns"] if count else 0
+            conditioning_rows = (draft_state.last_metrics["cursor_after"]-draft_state.last_metrics["cursor_before"]) if count else 0
             steps.append(dict(proposed_tokens=proposals,target_ids=verification["target_ids"],
                 matched=result.matched,accepted=result.accepted,committed_tokens=result.tokens,
                 fallback_token=result.fallback,rejection=int(result.matched < len(proposals)),
                 discarded=len(proposals)-result.accepted,proposal_latency_ns=p_end-p_start,
                 verification_latency_ns=v_end-p_end,commit_ns=now,ranks=ranks,
                 speculator_forwards=count,
+                requested_k=requested_k,actual_k=count,context_length=context_length,
+                controller_selection_ns=selection_ns,
+                conditioning_latency_ns=conditioning_ns,conditioning_rows=conditioning_rows,
+                proposal_work_latency_ns=p_end-p_start-conditioning_ns,
+                controller=dict(controller.last_decision) if controller is not None else None,
                 draft_state=dict(draft_state.last_metrics) if count else {}))
+            if controller is not None:
+                extra = dict(conditioning_ns=conditioning_ns,conditioning_rows=conditioning_rows) if getattr(controller,"uses_catchup_cost",False) else {}
+                controller.observe(context=context_length,requested_k=requested_k,proposed=count,
+                    accepted=result.accepted,outputs=len(result.tokens),proposal_ns=p_end-p_start,
+                    verification_ns=v_end-p_end,initial_prefix=len(steps)==1,terminal=result.finished,**extra)
             if result.finished:
                 break
         seq.status = SequenceStatus.FINISHED
@@ -120,4 +150,5 @@ def generate(engine,prompt,*,draft_path,reference_path,max_tokens,k,ignore_eos,a
         kv_released=not bm.used_block_ids,spec_state_released=runner._eagle_state is None,
         draft_state_released=draft_state is None or (draft_state.closed and draft_state.past is None),
         draft_state_mode=draft_state_mode,
+        adaptive_k=adaptive_k,
         close_ranks=close_status,prefill_ranks=first["ranks"])
